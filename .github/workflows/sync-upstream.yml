@@ -1,0 +1,73 @@
+name: Sync upstream branches
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: upstream-branch-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Synchronize branches and preserve diverged work
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          UPSTREAM_URL: https://github.com/bhuvighosh3/self-improving-ai.git
+          DESTINATION_URL: https://github.com/rishika1099/Self-Improving-AI.git
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$SYNC_TOKEN" ]]; then
+            echo "Set the repository Actions secret SYNC_TOKEN before running."
+            exit 1
+          fi
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_ASKPASS="$RUNNER_TEMP/sync-askpass.sh"
+          cat > "$GIT_ASKPASS" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$SYNC_TOKEN" ;;
+          esac
+          ASKPASS
+          chmod 700 "$GIT_ASKPASS"
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${UPSTREAM_URL:?}"
+          : "${DESTINATION_URL:?}"
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          git init --bare -q "$work/repo.git"
+          cd "$work/repo.git"
+          git remote add upstream "$UPSTREAM_URL"
+          git remote add destination "$DESTINATION_URL"
+          git fetch --quiet upstream '+refs/heads/*:refs/upstream/*'
+          git fetch --quiet destination '+refs/heads/*:refs/destination/*'
+          # Validate reserved namespaces before making any updates.
+          while read -r ref; do
+            branch=${ref#refs/upstream/}
+            case "$branch" in
+              sync|_sync-backups|_sync-backups/*)
+                echo "Upstream uses reserved branch namespace: $branch" >&2
+                exit 1 ;;
+            esac
+          done < <(git for-each-ref --format='%(refname)' refs/upstream/)
+          while read -r ref; do
+            branch=${ref#refs/upstream/}
+            next=$(git rev-parse "$ref")
+            previous=$(git rev-parse --verify "refs/destination/$branch" 2>/dev/null || true)
+            if [[ "$next" == "$previous" ]]; then continue; fi
+            if [[ -n "$previous" ]] && ! git merge-base --is-ancestor "$previous" "$next"; then
+              # Preserve fork work before mirroring an upstream rewrite or divergence.
+              key=$(printf '%s' "$branch" | git hash-object --stdin)
+              git push --quiet destination "$previous:refs/heads/_sync-backups/$key/$previous"
+              echo "Preserved previous $branch in _sync-backups/$key/$previous"
+            fi
+            # Refuse to overwrite concurrent changes made after our fetch.
+            git push --quiet --force-with-lease="refs/heads/$branch:$previous" destination "$next:refs/heads/$branch"
+            echo "Synced $branch"
+          done < <(git for-each-ref --format='%(refname)' refs/upstream/)

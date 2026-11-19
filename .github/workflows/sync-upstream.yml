@@ -1,0 +1,98 @@
+name: Sync upstream branches
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: upstream-branch-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Synchronize branches and preserve diverged work
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          UPSTREAM_URL: https://github.com/bhuvighosh3/self-improving-ai.git
+          DESTINATION_URL: https://github.com/rishika1099/Self-Improving-AI.git
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$SYNC_TOKEN" ]]; then
+            echo "Set the repository Actions secret SYNC_TOKEN before running."
+            exit 1
+          fi
+          export GIT_TERMINAL_PROMPT=0
+          export GIT_ASKPASS="$RUNNER_TEMP/sync-askpass.sh"
+          cat > "$GIT_ASKPASS" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' x-access-token ;;
+            *Password*) printf '%s\n' "$SYNC_TOKEN" ;;
+          esac
+          ASKPASS
+          chmod 700 "$GIT_ASKPASS"
+          : "${UPSTREAM_URL:?}"
+          : "${DESTINATION_URL:?}"
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          git init --bare -q "$work/repo.git"
+          cd "$work/repo.git"
+          git remote add upstream "$UPSTREAM_URL"
+          git remote add destination "$DESTINATION_URL"
+          git fetch --quiet upstream '+refs/heads/*:refs/upstream/*'
+          git fetch --quiet destination '+refs/heads/*:refs/destination/*'
+          # Validate reserved namespaces before making any updates.
+          while read -r ref; do
+            branch=${ref#refs/upstream/}
+            case "$branch" in
+              sync|_sync-backups|_sync-backups/*)
+                echo "Upstream uses reserved branch namespace: $branch" >&2
+                exit 1 ;;
+            esac
+          done < <(git for-each-ref --format='%(refname)' refs/upstream/)
+          # The default branch (main) carries this workflow, since GitHub only runs schedules
+          # from the default branch. It is kept as upstream main plus one commit adding this file.
+          wf=.github/workflows/sync-upstream.yml
+          wf_blob=$(git rev-parse --verify -q "refs/destination/main:$wf" || git rev-parse --verify -q "refs/destination/sync:$wf")
+          export GIT_AUTHOR_NAME=upstream-sync GIT_AUTHOR_EMAIL=upstream-sync@users.noreply.github.com
+          export GIT_COMMITTER_NAME=upstream-sync GIT_COMMITTER_EMAIL=upstream-sync@users.noreply.github.com
+          while read -r ref; do
+            branch=${ref#refs/upstream/}
+            next=$(git rev-parse "$ref")
+            previous=$(git rev-parse --verify "refs/destination/$branch" 2>/dev/null || true)
+            safe=false
+            if [[ "$branch" == main ]]; then
+              upstream_main=$next
+              export GIT_INDEX_FILE="$work/main.index"
+              git read-tree "$upstream_main"
+              git update-index --add --cacheinfo "100644,$wf_blob,$wf"
+              tree=$(git write-tree)
+              unset GIT_INDEX_FILE
+              if [[ -n "$previous" ]] && git rev-parse -q --verify "$previous^" >/dev/null \
+                && [[ "$(git rev-parse "$previous^")" == "$upstream_main" ]] \
+                && [[ "$(git rev-parse "$previous^{tree}")" == "$tree" ]]; then
+                continue
+              fi
+              # The old main is safe to replace if it was upstream plus only the workflow commit.
+              if [[ -n "$previous" ]] && git rev-parse -q --verify "$previous^" >/dev/null \
+                && git merge-base --is-ancestor "$previous^" "$upstream_main" \
+                && [[ "$(git diff --name-only "$previous^" "$previous")" == "$wf" ]]; then
+                safe=true
+              fi
+              next=$(git commit-tree "$tree" -p "$upstream_main" -m "Keep the upstream sync workflow on main")
+            fi
+            if [[ "$next" == "$previous" ]]; then continue; fi
+            if [[ -n "$previous" ]] && [[ "$safe" == false ]] && ! git merge-base --is-ancestor "$previous" "$next"; then
+              # Preserve fork work before mirroring an upstream rewrite or divergence.
+              key=$(printf '%s' "$branch" | git hash-object --stdin)
+              git push --quiet destination "$previous:refs/heads/_sync-backups/$key/$previous"
+              echo "Preserved previous $branch in _sync-backups/$key/$previous"
+            fi
+            # Refuse to overwrite concurrent changes made after our fetch.
+            git push --quiet --force-with-lease="refs/heads/$branch:$previous" destination "$next:refs/heads/$branch"
+            echo "Synced $branch"
+          done < <(git for-each-ref --format='%(refname)' refs/upstream/)

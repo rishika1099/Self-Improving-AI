@@ -28,6 +28,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--cases", nargs="*", help="Case IDs to run (default: all)")
     ap.add_argument("--include-slow", action="store_true", help="Also run the meeting-brief cases")
+    ap.add_argument("--set", choices=["all", "core", "hard"], default="all",
+                    help="core = G and V cases, hard = H and W cases")
     ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--timeout", type=float, default=300, help="Seconds per question")
     ap.add_argument("--out", type=Path, default=None)
@@ -40,7 +42,8 @@ def main() -> None:
 
     from self_improving_ai.evaluation.copilot.runner import load_golden, run_golden
 
-    cases = load_golden()
+    cases = [c for c in load_golden()
+             if args.set == "all" or (c.get("difficulty") == "hard") == (args.set == "hard")]
     if args.cases:
         cases = [c for c in cases if c["id"] in set(args.cases)]
     elif not args.include_slow:

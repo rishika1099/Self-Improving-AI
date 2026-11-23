@@ -109,3 +109,35 @@ def test_runner_writes_traces_and_report(tmp_path, monkeypatch):
     assert summary["pass_rate"] == 0.5 and summary["errors"] == 1
     assert len((tmp_path / "traces.jsonl").read_text().splitlines()) == 2
     assert "1/2 passed" in (tmp_path / "report.md").read_text()
+
+
+# Hard cases: date windows, next-client chains and composite facts.
+from datetime import date as _date  # noqa: E402
+
+from self_improving_ai.evaluation.copilot.scoring import fact_found, resolve_fact  # noqa: E402
+
+_EVENTS = {"CLI-004": [{"date": "2026-11-20", "start_time": "15:30"}],
+           "CLI-005": [{"date": "2026-11-22", "start_time": "09:00"}, {"date": "2026-12-05", "start_time": "09:30"}],
+           "CLI-001": [{"date": "2026-11-12", "start_time": "14:00"}, {"date": "2026-12-10", "start_time": "14:00"}]}
+_CLIENTS = {"CLI-001": ["Garcia", 146750], "CLI-004": ["Okafor", 32000], "CLI-005": ["Patel", 102100]}
+
+
+def _lookup(cid):
+    return _EVENTS.get(cid, [])
+
+
+def test_events_window_needs_every_client_in_range():
+    fact = resolve_fact({"type": "events_window", "days": 14, "clients": {c: [n] for c, (n, _) in _CLIENTS.items()}},
+                        _lookup, _date(2026, 11, 20))
+    assert fact["all"] == ["Okafor", "Patel"]
+    assert fact_found(fact, "You meet the Okafors today and Priya Patel on Nov 22.")
+    assert not fact_found(fact, "Only the Okafors.")
+
+
+def test_next_client_accepts_the_following_client_when_the_meeting_is_today():
+    fact = resolve_fact({"type": "next_client_total", "clients": _CLIENTS}, _lookup, _date(2026, 11, 20))
+    assert fact_found(fact, "Next is the Okafor Family, with $32,000 invested.")
+    assert fact_found(fact, "Your 3:30 already passed; next is Patel at $102,100.")
+    assert not fact_found(fact, "Next is Patel.")  # name without the total
+    later = resolve_fact({"type": "next_client_total", "clients": _CLIENTS}, _lookup, _date(2026, 11, 21))
+    assert not fact_found(later, "Okafor, $32,000")

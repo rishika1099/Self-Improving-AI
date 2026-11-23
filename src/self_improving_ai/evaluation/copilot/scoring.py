@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Callable
 
 STAGES = ("tools", "args", "order", "forbidden", "calls", "facts")
@@ -45,23 +45,66 @@ def _date_forms(iso: str) -> list[str]:
     return [iso, f"{month} {d.day}", f"{short} {d.day}", f"{d.day} {month}", f"{d.month}/{d.day}"]
 
 
+def _upcoming(events: list, today: date) -> list:
+    return sorted((e for e in events if str(e.get("date", "")) >= today.isoformat()),
+                  key=lambda e: (str(e["date"]), str(e.get("start_time", ""))))
+
+
+_NONE_UPCOMING = ["no upcoming", "no meetings", "nothing scheduled", "don't see any", "no scheduled"]
+
+
 def resolve_fact(fact: dict, events_for: EventsLookup | None, today: date) -> dict:
-    """Turn a dynamic fact (next_event) into a text fact using live calendar data."""
-    if fact["type"] != "next_event":
-        return fact
-    events = events_for(fact["client_id"]) if events_for else []
-    upcoming = sorted((e for e in events if str(e.get("date", "")) >= today.isoformat()
-                       and (not fact.get("time") or e.get("start_time") == fact["time"])),
-                      key=lambda e: (str(e["date"]), str(e.get("start_time", ""))))
-    if not upcoming:
-        return {"type": "text", "any": ["no upcoming", "no meetings", "nothing scheduled", "don't see any"],
-                "why": f"No {fact['client_id']} event on or after {today}"}
-    nxt = upcoming[0]
-    return {"type": "text", "any": _date_forms(str(nxt["date"])),
-            "why": f"{fact.get('why', 'Next event')}: {nxt.get('title')} on {nxt['date']} {nxt.get('start_time', '')}"}
+    """Turn a dynamic fact into a static one using live calendar data and the run date.
+
+    next_event          the date of one client's next event
+    events_window       every client with an event in the next `days` days (names must all appear)
+    next_client_total   name and portfolio total of the client met next; when that meeting is today,
+                        the following client is also accepted, since the prompt has the date but not the time
+    """
+    kind = fact["type"]
+    lookup = events_for or (lambda _cid: [])
+    if kind == "next_event":
+        upcoming = [e for e in _upcoming(lookup(fact["client_id"]), today)
+                    if not fact.get("time") or e.get("start_time") == fact["time"]]
+        if not upcoming:
+            return {"type": "text", "any": _NONE_UPCOMING, "why": f"No {fact['client_id']} event on or after {today}"}
+        nxt = upcoming[0]
+        forms = _date_forms(str(nxt["date"])) + (["today"] if str(nxt["date"]) == today.isoformat() else [])
+        return {"type": "text", "any": forms,
+                "why": f"{fact.get('why', 'Next event')}: {nxt.get('title')} on {nxt['date']} {nxt.get('start_time', '')}"}
+    if kind == "events_window":
+        end = (today + timedelta(days=fact["days"])).isoformat()
+        names = [c[0] for cid, c in fact["clients"].items()
+                 if any(str(e["date"]) <= end for e in _upcoming(lookup(cid), today))]
+        if not names:
+            return {"type": "text", "any": _NONE_UPCOMING, "why": f"No client events from {today} to {end}"}
+        return {"type": "all", "all": names, "why": f"Clients with events from {today} to {end}: {', '.join(names)}"}
+    if kind == "next_client_total":
+        firsts = []
+        for cid, (name, total) in fact["clients"].items():
+            ups = _upcoming(lookup(cid), today)
+            if ups:
+                firsts.append((str(ups[0]["date"]), str(ups[0].get("start_time", "")), name, total))
+        firsts.sort()
+        if not firsts:
+            return {"type": "text", "any": _NONE_UPCOMING, "why": f"No client events on or after {today}"}
+        accepted = firsts[:2] if firsts[0][0] == today.isoformat() and len(firsts) > 1 else firsts[:1]
+        options = [{"type": "every", "facts": [{"type": "text", "any": [name]},
+                                               {"type": "number", "value": total, "tol": 0.005}]}
+                   for _d, _t, name, total in accepted]
+        return {"type": "one_of", "facts": options,
+                "why": "Next client and portfolio total: " + " or ".join(f"{n} {t}" for _d, _t, n, t in accepted)}
+    return fact
 
 
 def fact_found(fact: dict, answer: str) -> bool:
+    if fact["type"] == "all":
+        low = answer.lower()
+        return all(s.lower() in low for s in fact["all"])
+    if fact["type"] == "every":
+        return all(fact_found(f, answer) for f in fact["facts"])
+    if fact["type"] == "one_of":
+        return any(fact_found(f, answer) for f in fact["facts"])
     if fact["type"] == "text":
         low = answer.lower()
         return any(s.lower() in low for s in fact["any"])

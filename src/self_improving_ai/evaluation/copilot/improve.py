@@ -290,6 +290,8 @@ def main() -> None:
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--timeout", type=float, default=300)
     ap.add_argument("--include-slow", action="store_true", help="Also run the meeting-brief cases")
+    ap.add_argument("--set", choices=["all", "core", "hard"], default="all",
+                    help="core = G and V cases, hard = H and W cases")
     ap.add_argument("--promote", action="store_true", help="Adopt the final learned memory into the app's store")
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args()
@@ -298,7 +300,8 @@ def main() -> None:
 
     from self_improving_ai.evaluation.copilot.runner import load_golden
 
-    cases = [c for c in load_golden() if a.include_slow or not c.get("slow")]
+    cases = [c for c in load_golden() if (a.include_slow or not c.get("slow"))
+             and (a.set == "all" or (c.get("difficulty") == "hard") == (a.set == "hard"))]
     out = a.out or Path("results/copilot") / time.strftime("improve_%Y%m%d_%H%M%S")
     print(f"Improving on {len(cases)} cases -> {out}")
     asyncio.run(run_improvement(cases, out, repeats=a.repeats, cycles=a.cycles, concurrency=a.concurrency,

@@ -214,10 +214,10 @@ python -m self_improving_ai.evaluation.copilot --include-slow
 
 Baseline results are in [docs/evaluation/copilot_golden_baseline_2026-11-17.md](docs/evaluation/copilot_golden_baseline_2026-11-17.md).
 
-The set now has 40 cases: 20 dev questions and 20 reworded holdout variants. The improvement loop compares the baseline, hand fixes (today's date and a client directory in the prompt), and learner cycles, where Gemini proposes intent corrections, tool notes and plan templates from dev failures and `harness.gate` adopts them only if they help on holdout:
+The set now has 60 cases. The core set has 20 dev questions and 20 reworded holdout variants. The hard set (H01 to H10 dev, W01 to W10 holdout) adds cross-client comparisons and totals, date windows, two-step lookups, partly unknown clients and conditional trade requests. The improvement loop compares the baseline, hand fixes (today's date and a client directory in the prompt), and learner cycles, where Gemini proposes intent corrections, tool notes and plan templates from dev failures and `harness.gate` adopts them only if they help on holdout:
 
 ```bash
-python -m self_improving_ai.evaluation.copilot.improve --repeats 2 --cycles 2
+python -m self_improving_ai.evaluation.copilot.improve --set hard --repeats 2 --cycles 2  # --set core, hard or all
 ```
 
-Hand fixes cut tool calls per question from 4.6 to 1.6 (p = 0.001) and raised holdout pass from 86% to 97%. Both learner cycles were rejected by the gate as not significant. A rerun after fixing the completion checker (it read only the first 2,000 characters of an answer, so long answers looked cut off and were retried) removed all retries. Details are in [docs/evaluation/copilot_golden_improvement_2026-11-18.md](docs/evaluation/copilot_golden_improvement_2026-11-18.md).
+Hand fixes cut tool calls per question from 4.6 to 1.6 (p = 0.001) and raised holdout pass from 86% to 97%. Both learner cycles were rejected by the gate as not significant. A rerun after fixing the completion checker (it read only the first 2,000 characters of an answer, so long answers looked cut off and were retried) removed all retries. On the hard set, hand fixes raised the pass rate from 80% to 100% (p = 0.03 over 20 questions; holdout alone 85% to 100%, p = 0.19) and cut calls per question from 10.3 to 3.2 (p < 0.001). The learner had no dev failures to learn from there, so a significant gain from the learner itself is still unproven. Details are in [docs/evaluation/copilot_golden_improvement_2026-11-18.md](docs/evaluation/copilot_golden_improvement_2026-11-18.md).

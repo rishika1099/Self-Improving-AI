@@ -47,8 +47,21 @@ The first run's traces showed three problems outside the orchestrator's plan:
 - **Note on hand_fixes timing:** that arm ran during a 40 minute window in which responses were slow, and G01 and G07 timed out at 300 s. The learner arms ran the same prompt plus lessons right afterwards with medians of 14 to 25 s, so the slowdown was most likely on the Vertex side, not the change.
 - **The learner reached 100% on both splits**, learning from the G01 and G07 failures, but the gate again rejected it (+2.8 holdout points, p = 0.33). The holdout set is saturated: the hand fixes already pass 97%, so one more passing case cannot be significant with 18 cases and 2 repeats.
 
+## Hard set (run 2026-11-20)
+
+20 new cases (10 dev, 10 holdout, often with different clients): cross-client comparisons and totals, date windows, two-step lookups, partly unknown clients and conditional trade requests. Answers were computed from Firestore and the holdings fixture. Date-based facts are resolved on the run date. 2 repeats per arm.
+
+| Arm | Dev pass | Holdout pass | Calls per question |
+|---|---|---|---|
+| baseline | 75% | 85% | 10.3 |
+| hand_fixes | 100% | 100% | 3.2 |
+
+- Over all 20 cases, pass rate rose from 80% to 100% (paired, p = 0.03). On the 10 holdout cases alone the gain is not significant (p = 0.19). Calls per question fell from 10.3 to 3.2 (p < 0.001). The hand fixes were written before these cases existed.
+- Baseline failures were next-client chains (H04, W04), the Chen next-meeting chain (H07) and partly unknown clients (H06, W06), which took 21 to 24 calls.
+- **The learner did not run a lesson cycle:** all dev cases passed with the hand fixes, so it had nothing to learn from. A significant gain from the learner itself is still unproven.
+
 ## Next steps
 
 1. Ship the hand fixes (they are in `agents/orchestrator/agent.py` and on by default).
-2. Add harder cases (two clients in one request, ambiguous names, multi-step requests) and run a learner arm from the baseline, so the learner has room to show a gain. Use 5 repeats with the slow meeting-brief cases included to get power on pass rate.
+2. Run a learner arm from the baseline, without the hand fixes, so it has failures to learn from. Use 5 repeats with the slow meeting-brief cases included to get power on pass rate.
 3. Fix `get_upcoming_events(client_id)`: it needs the Firestore composite index or no `order_by("date")` in `calendar_store.py`.

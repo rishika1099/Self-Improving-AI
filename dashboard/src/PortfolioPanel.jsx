@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import ConnectionSettings from "./ConnectionSettings";
+import CustomerLearning from "./CustomerLearning";
 import { requestJson } from "./connectionRequest";
 import "./portfolio.css";
 
@@ -12,13 +13,18 @@ export default function PortfolioPanel({clients}) {
   const [symbol, setSymbol] = useState("AAPL");
   const [start, setStart] = useState("2026-09-01");
   const [end, setEnd] = useState("2026-09-30");
+  const [marketSources,setMarketSources]=useState({symbol:'default',start_date:'default',end_date:'default'});
   const [mode, setMode] = useState("calculate");
-  const [message, setMessage] = useState("Show the Garcia Family CLI-001 allocation drift against its draft 60/40 target.");
+  const [message, setMessage] = useState("Show the selected client's allocation drift against its stored draft target.");
+  const [textSource,setTextSource]=useState('default');
+  const [group,setGroup]=useState(()=>crypto.randomUUID());
+  const [learningRefresh,setLearningRefresh]=useState(0);
   const [run, setRun] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const pending = useRef(null);
+  const lastAttempt = useRef(null);
   useEffect(()=>()=>{pending.current?.abort();pending.current=null;},[]);
   const [overrides, setOverrides] = useState({});
   const [connectionsOpen, setConnectionsOpen] = useState(false);
@@ -40,14 +46,20 @@ export default function PortfolioPanel({clients}) {
     try {
       const scenario = Object.fromEntries(Object.entries(overrides).filter(([,value])=>value !== "").map(([key,value])=>[key,Number(value)]));
       if (scenario.target_stock_weight !== undefined) scenario.target_stock_weight /= 100;
+      const market=task==='history'?{symbol,start_date:start,end_date:end}:task==='quote'?{symbol}:{};
+      const requestKey=JSON.stringify({mode,message,client,task,symbol,start,end,scenario,group,textSource,marketSources});
+      if(lastAttempt.current?.key!==requestKey||lastAttempt.current?.confirmed)lastAttempt.current={key:requestKey,id:crypto.randomUUID(),confirmed:false};
+      const requestId=lastAttempt.current.id;
       const data = await requestJson(`/api/portfolio/${mode === "agent" ? "agent" : "execute"}`, {
         method:"POST",signal:controller.signal,timeoutMs:mode==="agent"?125000:15000,
         timeoutMessage:"Analysis timed out. You can retry or choose another model in Connections.",
-        body: JSON.stringify(mode === "agent" ? {message} : {task, client_id:client, symbol, start_date:start, end_date:end,...scenario})
+        body: JSON.stringify(mode === "agent" ? {message,client_id:client,observation:{event_id:requestId,evidence_group_id:group,text_source:textSource}} : {task, client_id:client,...market,...scenario,observation:{event_id:requestId,evidence_group_id:group,parameter_sources:{...Object.fromEntries(Object.keys(market).map(k=>[k,marketSources[k]])),...Object.fromEntries(Object.keys(scenario).map(k=>[k,'manual']))}}})
       });
       if(pending.current!==controller) return;
       if(!["success","error"].includes(data?.status)) throw new Error("The service returned an incomplete analysis. Try again.");
+      lastAttempt.current.confirmed=true;
       setRun(data);
+      setLearningRefresh(v=>v+1);
       if (data.status === "error") setError(data.result?.error?.message || "This request is unavailable.");
     } catch (exception) {if(pending.current===controller&&exception.kind!=="cancelled")setError(exception.message || "Could not reach the service.");}
     finally {if(pending.current===controller){pending.current=null;setBusy(false);}}
@@ -61,15 +73,15 @@ export default function PortfolioPanel({clients}) {
       <label>Workflow<select aria-label="Workflow" value={mode} disabled={busy} onChange={e=>reset(setMode)(e.target.value)}>
         <option value="calculate">Portfolio calculations</option><option value="agent">Ask Portfolio Agent (Gemini)</option>
       </select></label>
-      {mode === "agent" ? <label className="portfolio-wide">Your question<textarea aria-label="Your question" value={message} required maxLength={3000} disabled={busy} onChange={e=>reset(setMessage)(e.target.value)}/></label> : <>
-        <label>Client<select aria-label="Client" value={client} disabled={busy} onChange={e=>changeContext(setClient)(e.target.value)}>{clients.map(c=><option key={c.client_id} value={c.client_id}>{c.profile.name}</option>)}</select></label>
+      <label>Client<select aria-label="Client" value={client} disabled={busy} onChange={e=>{changeContext(setClient)(e.target.value);setGroup(crypto.randomUUID());}}>{clients.map(c=><option key={c.client_id} value={c.client_id}>{c.profile.name}</option>)}</select></label>
+      {mode === "agent" ? <label className="portfolio-wide">Your question<textarea aria-label="Your question" value={message} required maxLength={3000} disabled={busy} onChange={e=>{reset(setMessage)(e.target.value);setTextSource('manual');}}/></label> : <>
         <label>Analysis<select aria-label="Analysis" value={task} disabled={busy} onChange={e=>changeContext(setTask)(e.target.value)}>
           <option value="allocation">Allocation drift</option><option value="risk">Risk and return</option>
           <option value="projection">Goal projection</option><option value="holdings">Holdings</option>
           <option value="quote">External quote</option><option value="history">External history</option>
         </select></label>
-        {["quote","history"].includes(task) && <label>Symbol<input aria-label="Symbol" value={symbol} required disabled={busy} onChange={e=>reset(setSymbol)(e.target.value)}/></label>}
-        {task === "history" && <><label>Start date<input aria-label="Start date" type="date" value={start} required disabled={busy} onChange={e=>reset(setStart)(e.target.value)}/></label><label>End date<input aria-label="End date" type="date" value={end} required disabled={busy} onChange={e=>reset(setEnd)(e.target.value)}/></label></>}
+        {["quote","history"].includes(task) && <label>Symbol<input aria-label="Symbol" value={symbol} required disabled={busy} onChange={e=>{reset(setSymbol)(e.target.value);setMarketSources(s=>({...s,symbol:'manual'}));}}/></label>}
+        {task === "history" && <><label>Start date<input aria-label="Start date" type="date" value={start} required disabled={busy} onChange={e=>{reset(setStart)(e.target.value);setMarketSources(s=>({...s,start_date:'manual'}));}}/></label><label>End date<input aria-label="End date" type="date" value={end} required disabled={busy} onChange={e=>{reset(setEnd)(e.target.value);setMarketSources(s=>({...s,end_date:'manual'}));}}/></label></>}
         {task === "allocation" && <label>Stock target (%)<input aria-label="Stock target (%)" type="number" min="0" max="100" step="any" placeholder="Use stored draft" value={overrides.target_stock_weight ?? ""} disabled={busy} onChange={e=>changeScenario("target_stock_weight",e.target.value)}/></label>}
         {task === "projection" && <>{[["target_amount","Goal amount (USD)",1],["years","Years",1],["annual_contribution","Annual contribution (USD)",0],["annual_withdrawal","Annual withdrawal (USD)",0]].map(([key,label,min])=><label key={key}>{label}<input aria-label={label} type="number" min={min} max={key === "years" ? 120 : undefined} step={key === "years" ? 1 : "any"} placeholder="Use stored draft" value={overrides[key] ?? ""} disabled={busy} onChange={e=>changeScenario(key,e.target.value)}/></label>)}<p className="portfolio-wide">Leave fields blank to use the stored draft. Entering zero explicitly replaces a stored cash flow.</p></>}
       </>}
@@ -78,6 +90,7 @@ export default function PortfolioPanel({clients}) {
     </form>
     {busy&&<p role="status">{mode==="agent"?"Asking Gemini and checking portfolio tools… This can take up to two minutes.":"Running the selected calculation…"} You can cancel waiting.</p>}
     {notice&&<p role="status">{notice}</p>}
+    {run?.learning&&<p role="status">{run.learning.status==='storage_error'?'本次学习记录未成功保存，计算结果仍可查看。':run.learning.status==='connected'?'本次操作已交给学习模块。':'本次操作已记录，偏好更新仍待处理。'}</p>}
     {mode === "agent" && <p>Uses the configured Gemini account. Missing configuration is reported explicitly.</p>}
     {error && <div className="portfolio-error" role="alert">{error}{(["MISSING_API_KEY","MISSING_MODEL_CONFIGURATION"].includes(run?.result?.error?.code)||run?.result?.source==="gemini")&&<button type="button" className="portfolio-configure-link" onClick={()=>setConnectionsOpen(true)}>Open connection settings</button>}{run?.result?.error?.retryable&&<button type="button" className="portfolio-configure-link" disabled={busy} onClick={submit}>Retry analysis</button>}</div>}
     {run && <div className="portfolio-results" aria-live="polite">
@@ -93,5 +106,7 @@ export default function PortfolioPanel({clients}) {
       {run.response && <p className="portfolio-answer">{run.response}</p>}
       <details><summary>Execution evidence</summary><pre>{JSON.stringify({run_id:run.run_id,status:run.status,metadata:run.metadata,trace:run.trace},null,2)}</pre></details>
     </div>}
+    <button className="learning-new-round" type="button" disabled={busy} onClick={()=>{setGroup(crypto.randomUUID());setNotice('已开始新一轮分析。是否属于独立证据仍由学习模块判断。');}}>开始新一轮分析</button>
+    <CustomerLearning key={client} client={client} clientName={clients.find(c=>c.client_id===client)?.profile.name} group={group} refresh={learningRefresh} disabled={busy}/>
   </section>;
 }

@@ -1,0 +1,72 @@
+import React, {useEffect, useState, useRef} from 'react';
+import {requestJson} from './connectionRequest';
+
+const labels={waiting_for_module:'操作已记录，等待学习模块',connected:'学习模块已连接',processing_pending:'有操作等待处理，暂不使用旧画像',module_error:'学习模块暂不可用，操作仍保留',module_busy:'学习模块仍在处理，请稍后刷新或重试'};
+const deliveryLabels = {
+  applied: '模块已处理',
+  superseded: '已由新修订或撤回替代',
+  needs_review: '需人工确认',
+  pending: '等待处理',
+};
+export default function CustomerLearning({client,clientName,group,refresh,disabled}) {
+  const [view,setView]=useState(null), [error,setError]=useState(''), [note,setNote]=useState('');
+  const [busy,setBusy]=useState(false), [version,setVersion]=useState(0);
+  const noteAttempt=useRef(null);
+  const base=`/api/portfolio/learning/${encodeURIComponent(client)}`;
+  useEffect(()=>{
+    const controller=new AbortController();
+    setView(null);setError('');
+    requestJson(base,{signal:controller.signal}).then(setView).catch(e=>{if(!controller.signal.aborted)setError(e.message);});
+    return ()=>controller.abort();
+  },[base,refresh,version]);
+  async function action(path,body) {
+    setBusy(true);setError('');
+    try {
+      const data=await requestJson(base+path,{method:'POST',body:JSON.stringify(body||{}),timeoutMs:15000});
+      if(data.status==='error'||data.learning?.status==='storage_error') throw new Error('记录保存失败，请重试。');
+      if(path==='/notes'){setNote('');noteAttempt.current=null;}
+      setVersion(v=>v+1);
+    } catch(e) {setError(e.message);} finally {setBusy(false);}
+  }
+  async function exportRecords() {
+    setBusy(true);setError('');
+    try {
+      const data=await requestJson(base+'/export');
+      const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+      const a=document.createElement('a');a.href=url;a.download=`portfolio-${client}-operations.json`;a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    } catch(e) {setError(e.message);} finally {setBusy(false);}
+  }
+  const rows=view?.events||[];
+  const latest=new Map();
+  for(const row of rows)if(row.kind==='event')latest.set(row.event_id,row);
+  const retracts=new Map(rows.filter(r=>r.kind==='retract').map(r=>[r.event_id,r]));
+  const context=view?.context;
+  const names={risk_tilt:'风险倾向',adjustment_style:'调整方式',maximum_loss_limit:'最大损失限制',adopted_target_allocation:'已接受的目标配置',conservative:'保守',balanced:'均衡',growth:'较高风险暴露',gradual:'分阶段调整',flexible:'可接受一次较大调整'};
+  const printable=x=>typeof x==='string'||typeof x==='number'?String(x):JSON.stringify(x??'暂未确定');
+  const label=x=>typeof x==='string'&&Object.hasOwn(names,x)?names[x]:printable(x);
+  const describe=x=>typeof x==='string'?label(x):typeof x?.target_stock_weight==='number'?`研究过股票 ${(x.target_stock_weight*100).toFixed(0)}% 的情景`:x?.field?`${label(x.field)}：${label(x.value)}`:printable(x?.summary||x?.reason||'详情见来源记录');
+  return <section className="customer-learning" aria-label="客户偏好学习">
+    <h3>客户偏好学习</h3>
+    <p role="status">{view ? labels[view.status]||view.status : error?'客户记录读取失败，请重试':'正在读取客户记录…'}</p>
+    <p>当前客户：{clientName||client} · 待处理记录：{view?.pending_count??'—'}{view?.review_count ? ` · 需确认记录：${view.review_count}` : ''}。记录操作不代表客户已接受或执行方案。</p>
+    <label>补充客户说明<textarea aria-label="补充客户说明" value={note} maxLength={3000} disabled={busy||disabled} onChange={e=>setNote(e.target.value)} placeholder="例如：该客户整体比较保守。也可以记录假设或纠正，含义由学习模块判断。"/></label>
+    <div className="learning-actions">
+      <button disabled={busy||disabled||!note.trim()} onClick={()=>{const key=JSON.stringify([note,group]);if(noteAttempt.current?.key!==key)noteAttempt.current={key,id:crypto.randomUUID()};action('/notes',{message:note,client_id:client,observation:{event_id:noteAttempt.current.id,evidence_group_id:group,text_source:'manual'}});}}>保存客户说明</button>
+      <button disabled={busy||disabled} onClick={()=>action('/retry')}>重试待处理记录</button>
+      <button disabled={busy} onClick={exportRecords}>导出当前客户记录</button>
+    </div>
+    {error&&<p role="alert">{error}</p>}
+    {context ? <><h4>供后续分析使用的客户信息</h4><p>{context.summary||'学习模块已返回客户信息。'}</p><p>暂定支持程度不等于已校准的风险评分。</p>{[['team_declared','团队明确说明'],['tentative_preferences','暂定倾向'],['recent_attention','近期关注'],['unknowns','尚不明确'],['usage_notes','本次使用说明']].map(([key,title])=><div key={key}><strong>{title}</strong>{Array.isArray(context[key])&&context[key].length?<ul>{context[key].map((x,i)=><li key={i}>{describe(x)}{x?.source_event_id?`（依据 ${x.source_event_id}）`:''}</li>)}</ul>:<p>暂无返回记录</p>}</div>)}<details><summary>查看完整客户信息和来源</summary><pre>{JSON.stringify(context,null,2)}</pre></details></>:
+      <p>暂时没有可供后续分析使用的客户信息。模块接入并处理记录后，这里会显示返回的信息。</p>}
+    <h4>最近操作与学习结果</h4>
+    {view&&!latest.size&&<p>还没有操作。可以先运行一次计算，或补充一条客户说明。</p>}
+    {[...latest.values()].reverse().map(row=><article key={row.event_id} className="learning-event">
+      <strong>{row.event.user_text||({allocation_drift:'配置偏离试算',risk:'风险指标计算',projection:'目标预测',holdings:'持仓查询',quote:'外部报价查询',history:'历史价格查询'}[row.event.task]||row.event.task)}</strong>
+      <p>{new Date(row.event.occurred_at).toLocaleString()} · {deliveryLabels[row.delivery_status] || deliveryLabels.pending}{retracts.has(row.event_id)?` · ${retracts.get(row.event_id).delivery_status==='applied'?'已撤回':'撤回待处理'}`:''}</p>
+      <details><summary>查看输入来源和变化依据</summary><pre>{JSON.stringify({input:row.event,learning_result:row.update},null,2)}</pre></details>
+      <button disabled={busy||disabled||retracts.has(row.event_id)} onClick={()=>action(`/retract/${encodeURIComponent(row.event_id)}`)}>撤回这条记录</button>
+    </article>)}
+    {view?.total_events>100&&<p>这里只显示最近 100 次操作及其撤回状态，导出包含完整修订历史。</p>}
+  </section>;
+}

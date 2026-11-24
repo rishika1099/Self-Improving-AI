@@ -1,13 +1,23 @@
 """Component A endpoints; explicit calculations and model-driven requests are separate."""
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from self_improving_ai.agents.portfolio.service import execute_task, run_portfolio_agent
+from self_improving_ai.agents.portfolio.application import calculate_for_client, analyze_for_client, save_client_note, require_client
+from self_improving_ai.agents.portfolio.learning import Journal
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
+
+
+class Observation(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    event_id: str | None = Field(default=None, min_length=1,max_length=100,pattern=r'^[A-Za-z0-9_-]+$')
+    evidence_group_id: str | None = Field(default=None,min_length=1,max_length=100,pattern=r'^[A-Za-z0-9_-]+$')
+    parameter_sources: dict[str, Literal['default','manual','unknown']] = Field(default_factory=dict,max_length=20)
+    text_source: Literal['default','manual','unknown'] = 'unknown'
 
 
 class CalculationRequest(BaseModel):
@@ -25,6 +35,7 @@ class CalculationRequest(BaseModel):
     years: int | None = Field(default=None, ge=1, le=120)
     annual_contribution: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     annual_withdrawal: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    observation: Observation = Field(default_factory=Observation)
 
     @model_validator(mode="after")
     def reject_ignored_scenarios(self):
@@ -41,6 +52,9 @@ class CalculationRequest(BaseModel):
 class AgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     message: str = Field(min_length=1, max_length=3000)
+    client_id: str | None = Field(default=None,min_length=1,max_length=30)
+    account_id: str | None = Field(default=None, min_length=1, max_length=50)
+    observation: Observation = Field(default_factory=Observation)
 
 
 @router.post("/execute")
@@ -59,9 +73,93 @@ async def calculate(request: CalculationRequest):
         args = {"symbol": request.symbol}
     if request.task == "history":
         args.update(start_date=request.start_date, end_date=request.end_date)
-    return await run_in_threadpool(execute_task, request.task, args)
+    if 'client_id' not in request.model_fields_set:
+        # Legacy callers may compute with their old default, but cannot silently
+        # attach learning records to that default household.
+        result = await run_in_threadpool(execute_task, request.task, args)
+        result['learning'] = {'status':'client_not_selected'}
+        return result
+    try:
+        metadata=request.observation.model_dump()
+        metadata['requested_keys']=[key for key in args if key in request.model_fields_set]
+        return await run_in_threadpool(calculate_for_client,request.task,args,
+                                      request.client_id,metadata)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
 
 
 @router.post("/agent")
 async def ask_agent(request: AgentRequest):
-    return await run_portfolio_agent(request.message)
+    if not request.client_id:
+        if request.account_id:
+            raise HTTPException(422, 'Select a client before specifying an account.')
+        result = await run_portfolio_agent(request.message)
+        result['learning'] = {'status':'client_not_selected'}
+        return result
+    try:
+        return await analyze_for_client(request.message, request.client_id,
+                                        request.observation.model_dump(), account_id=request.account_id)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
+
+
+@router.get('/learning/{client_id}')
+def learning_view(client_id: str):
+    try:
+        require_client(client_id)
+        return Journal().view(client_id)
+    except ValueError as exc:
+        raise HTTPException(404,str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503,'Customer learning storage is unavailable.') from exc
+
+
+@router.post('/learning/{client_id}/notes')
+def learning_note(client_id: str, request: AgentRequest):
+    if request.client_id and request.client_id != client_id:
+        raise HTTPException(409,'Client context mismatch.')
+    try:
+        return save_client_note(request.message, client_id, request.observation.model_dump(),
+                                account_id=request.account_id)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
+
+
+@router.post('/learning/{client_id}/retry')
+def learning_retry(client_id: str):
+    try:
+        require_client(client_id)
+        journal=Journal()
+        status=journal.sync(client_id, retry_pending=True)
+        return {**journal.view(client_id),'last_delivery_status':status}
+    except ValueError as exc:
+        raise HTTPException(404,str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503,'Customer learning storage is unavailable.') from exc
+
+
+@router.post('/learning/{client_id}/retract/{event_id}')
+def learning_retract(client_id: str,event_id: str):
+    try:
+        require_client(client_id)
+        journal=Journal()
+        journal.retract(client_id,event_id)
+        status=journal.sync(client_id)
+        return {**journal.view(client_id),'last_delivery_status':status}
+    except ValueError as exc:
+        raise HTTPException(404,str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503,'Could not save the retraction; retry later.') from exc
+
+
+@router.get('/learning/{client_id}/export')
+def learning_export(client_id: str):
+    try:
+        require_client(client_id)
+        journal=Journal()
+        return {'schema_version':'portfolio-integration-export-v1',
+                'view':journal.view(client_id),'deliveries':journal.rows(client_id)}
+    except ValueError as exc:
+        raise HTTPException(404,str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503,'Could not export customer records.') from exc

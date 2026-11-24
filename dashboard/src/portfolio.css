@@ -50,3 +50,11 @@
 .connection-content button:disabled {opacity:.5; cursor:default;}
 .connection-footer {display:flex; justify-content:flex-end; gap:8px; margin-top:20px; padding-top:16px; border-top:1px solid var(--border);}
 @media(max-width:500px) {.connection-content {padding:18px;} .connection-heading p {max-width:240px;} .connection-actions button {flex:1;} }
+.customer-learning { margin-top: 24px; padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.customer-learning textarea { display: block; width: 100%; min-height: 88px; box-sizing: border-box; margin: 8px 0; padding: 10px; font: inherit; }
+.learning-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.learning-event { margin: 12px 0; padding: 14px; border: 1px solid #cbd5e1; border-radius: 6px; overflow-wrap: anywhere; }
+.customer-learning pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.customer-learning button,.learning-new-round { padding: 8px 12px; cursor: pointer; font: inherit; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); }
+.customer-learning textarea { border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
+.customer-learning button:disabled { cursor: default; opacity: .55; }

@@ -53,7 +53,8 @@ def execute_task(task: str, arguments: dict) -> dict:
             "model": None, "model_tokens": 0, "metadata": run_metadata()}
 
 
-async def run_portfolio_agent(message: str, *, model=None, lessons: str = "") -> dict:
+async def run_portfolio_agent(message: str, *, model=None, lessons: str = "", client_id=None,
+                              learning_context=None, account_id=None) -> dict:
     """Run real ADK. An injected BaseLlm is for explicitly labeled transport tests only."""
     started = time.perf_counter()
     run = {"run_id": uuid4().hex,
@@ -74,7 +75,9 @@ async def run_portfolio_agent(message: str, *, model=None, lessons: str = "") ->
 
         from self_improving_ai.agents.portfolio.agent import create_portfolio_agent
 
-        agent = create_portfolio_agent(model)
+        agent = (create_portfolio_agent(model, client_id=client_id, learning_context=learning_context,
+                                        account_id=account_id)
+                 if client_id else create_portfolio_agent(model))
         run["model"] = agent.model.model if model is None else type(model).__name__
         sessions = InMemorySessionService()
         session = await sessions.create_session(app_name="component_a", user_id="local_advisor",

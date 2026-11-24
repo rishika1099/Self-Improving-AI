@@ -28,7 +28,7 @@
 
 1. 选 Garcia 或其他客户，不填股票目标，运行计算。展开近期记录，可看到默认目标及真实比较基础。
 2. 手动输入 60，再运行；数值可以相同，但来源应为 manual。
-3. 在“补充客户说明”填写该客户的需求并保存。当前应显示等待学习模块，不能显示已经学会了保守偏好。
+3. 在“补充客户说明”填写该客户的需求并保存。模块和 Gemini 均已配置时，检查解读结果及原话来源。模型连接缺失时，说明会保存为待解析。
 4. 切换客户，确认说明和操作不会跟过去；自然语言模式也应继续显示当前客户。
 5. 撤回一条记录。没有模块时显示“撤回待处理”，而非伪称画像已经重建。
 6. 导出当前客户记录。再次打开网页或重启预览后，仍能读取历史。
@@ -45,6 +45,8 @@ SIA_PORTFOLIO_LEARNING_DIR=<应用侧学习数据目录，可选>
 ```
 
 工厂接收 `workspace_dir`，再以模块支持的 `work_dir` 创建 PortfolioLearner。模块保存在学习目录的 learner 子目录。启用后，解析器使用 Portfolio A 的 Gemini 配置。配置缺失时，含原话的记录保留待解析状态。可以先在一个独立的 SIA_PORTFOLIO_LEARNING_DIR 中验收新规则版本。
+
+同一事件从接收到完成时，如果原话、范围和来源都匹配，完成修订会复用首次已经通过校验的文本解析。计算相关证据仍用完成修订的结果重新生成。导出中的 `extraction.parser.reused_from_revision` 可核对来源。首次解析未完成，或原话、范围有变化时，会尝试新的解析。
 
 | 方法 | 约定 |
 |---|---|
@@ -87,3 +89,28 @@ SIA_PORTFOLIO_LEARNING_DIR=<应用侧学习数据目录，可选>
 验证真实 ADK 调用链时使用明确标注的脚本模型；学习接口检查使用 ContractDouble。它们只证明数据传递和控制逻辑，不证明真实语言理解、偏好学习效果或投资结果。当前没有使用客户凭据调用外部模型。
 
 脚本模型覆盖了同一请求在记录偏好前、写入后和撤回后三次运行。这三次的工具结果一致，客户说明只在写入后进入模型上下文。本机 Gemini 连接目前未配置，真实模型的语义解析仍待验证。
+
+## 客户级本地验收
+
+验收使用独立的 `data/portfolio-learning-solo-acceptance` 目录。重复解析修复后，27 项交付测试和 78 项项目后台检查通过。在实际 A 执行器上，用固定解析和脚本模型记录了学习前、学习后及撤回后三次工具调用和客户上下文。证据保存在 `artifacts/portfolio-solo-acceptance.json`，后台结果保存在 `artifacts/portfolio-solo-checks.xml`。
+
+从 `local-preview/latest-main` 目录启动同一验收环境时，在当前 PowerShell 窗口使用以下配置。重新打开 PowerShell 后需要重新设置。
+
+```powershell
+.\Stop-Local.ps1
+$env:SIA_PORTFOLIO_LEARNER_FACTORY = 'self_improving_ai.agents.portfolio.preference_learning.adapter:create_adapter'
+$env:SIA_PORTFOLIO_LEARNING_DIR = Join-Path (Get-Location) 'data/portfolio-learning-solo-acceptance'
+.\Start-Local.ps1
+```
+
+真实模型验收先在 **Portfolio Analysis → Connections → Portfolio Agent** 使用 **Test Gemini**，通过后执行 **Save connection**。用单独的模拟客户和数据目录完成以下检查。
+
+| 场景 | 通过条件 |
+|---|---|
+| 同一组合分别使用预填和手动 60/40 | 工具结果一致，记录分别标记默认和手动来源。 |
+| 先分析，再保存“这个客户整体比较保守”，重复同一个问题 | 第二次 A 解释时可追溯到该说明，工具仍按本次指定的参数计算。 |
+| 测试“假设这个客户比较保守”和“这个客户不算保守” | 两条输入均不作为确认的保守说明。 |
+| 切换客户并重新启动 | 第二位客户看不到这条说明，原客户状态可恢复。 |
+| 撤回保守说明并重复同一个问题 | A 的上下文和回答停止引用该说明，历史显示已撤回。 |
+
+这些结果用来判断真实模型对输入的解释是否符合预期。当前实现可在客户级使用；同一轮分析中的临时偏好仍缺少 A 的分析编号传递。网页账户选择入口、B/C 自动写入和默认试算权重校准取决于后续验收范围。

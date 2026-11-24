@@ -11,7 +11,8 @@ import sqlite3
 
 from .context import build_context
 from .learner import load_rules, rebuild_state, result_from, update_state
-from .schemas import canonical, checked_id, issue, validate_event
+from .parser import ParsePacket
+from .schemas import canonical, checked_id, event_scope, issue, validate_event
 from .signals import extract_signals
 
 
@@ -111,6 +112,33 @@ class PortfolioLearner:
                                        f"{field} must stay constant across revisions.")
         return None
 
+    def _reusable_initial_parse(self, db, event):
+        if event["outcome"] not in {"success", "error"} or event["revision"] == 1:
+            return None
+        row = db.execute(
+            """SELECT extraction FROM events
+               WHERE client=? AND event=? AND rev<? ORDER BY rev DESC LIMIT 1""",
+            (event["client_id"], event["event_id"], event["revision"]),
+        ).fetchone()
+        if row is None:
+            return None
+        previous = json.loads(row[0])
+        earlier = previous["event"]
+        parser = previous["parser"]
+        if (earlier["outcome"] != "received"
+                or previous["status"] != "ok"
+                or parser.get("validation") != "ok"
+                or not isinstance(parser.get("raw"), str)):
+            return None
+        fields = ("schema_version", "task", "entry_point", "text_source", "user_text")
+        if any(earlier.get(field) != event.get(field) for field in fields):
+            return None
+        if event_scope(earlier) != event_scope(event):
+            return None
+        packet = ParsePacket(parser["raw"], parser["mode"], parser.get("model"),
+                             parser.get("prompt_version"))
+        return earlier["revision"], packet
+
     def process_event(self, raw_event, *, expected_profile_version=None, retry_pending=False):
         """An optional version supports optimistic concurrency across callers."""
         try:
@@ -126,7 +154,18 @@ class PortfolioLearner:
                 if conflict:
                     return conflict
                 base_version = self._state(db,client)["profile_version"]
-            extraction = extract_signals(raw_event, self.parser)
+                reusable = self._reusable_initial_parse(db, event)
+            if reusable is None:
+                extraction = extract_signals(raw_event, self.parser)
+            else:
+                source_revision, packet = reusable
+                # Revalidate the stored text semantics and derive signals from the
+                # current execution fields. The current revision owns the signals.
+                extraction = extract_signals(raw_event, lambda _: packet)
+                if extraction["parser"].get("validation") == "ok":
+                    extraction["parser"]["reused_from_revision"] = source_revision
+                else:
+                    extraction = extract_signals(raw_event, self.parser)
             with self._write() as db:
                 conflict = self._preflight(db,event,digest,base_version,retry_pending=retry_pending)
                 if conflict:

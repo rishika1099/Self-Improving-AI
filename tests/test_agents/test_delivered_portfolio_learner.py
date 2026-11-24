@@ -117,6 +117,64 @@ def test_failed_agent_calculation_can_recover_preference_on_retry(api, monkeypat
     assert view["context"]["team_declared"][0]["value"] == "conservative"
 
 
+def test_completed_agent_request_reuses_validated_text_and_keeps_queue_moving(api, monkeypatch):
+    learner = learning.adapter_for(FACTORY, str(learning.workspace())).learner
+    calls = []
+
+    def flaky_parser(text):
+        calls.append(text)
+        if len(calls) > 1:
+            raise TimeoutError("Synthetic second-call timeout")
+        return [signal(text)]
+
+    async def finished(*args, **kwargs):
+        return {"run_id": "completed-test-run", "status": "success", "response": "Synthetic answer",
+                "trace": []}
+
+    learner.parser = flaky_parser
+    monkeypatch.setattr(application, "run_portfolio_agent", finished)
+    result = api.post("/api/portfolio/agent", json={
+        "client_id": CLIENT, "message": STATEMENT, "observation": {"event_id": "same-text"},
+    })
+    result.raise_for_status()
+    run = result.json()
+    assert run["learning_context_used"]["context"]["team_declared"][0]["value"] == "conservative"
+    assert run["learning"]["status"] == "connected"
+    assert calculate(api, "later-allocation")["learning"]["status"] == "connected"
+    assert calls == [STATEMENT]
+
+    view = api.get(API).json()
+    assert view["pending_count"] == 0
+    saved = next(record for record in view["events"] if record["event_id"] == "same-text")
+    extraction = saved["update"]["extraction"]
+    assert extraction["parser"]["reused_from_revision"] == 1
+    assert extraction["signals"][0]["source_revision"] == 2
+    assert extraction["event"]["result_reference"] == "completed-test-run"
+    assert view["context"]["team_declared"][0]["source_event_id"] == "same-text"
+
+
+@pytest.mark.parametrize("changed_fields", [
+    {"user_text": "The client now prefers higher risk."},
+    {"scope": {"account_id": "ACC-001A"}},
+])
+def test_changed_text_or_scope_forces_a_new_parse(tmp_path, changed_fields):
+    calls = []
+
+    class ScopedParser:
+        def parse_scoped(self, text, scope):
+            calls.append((text, scope))
+            return [signal(text, value="growth" if "higher risk" in text else "conservative")]
+
+    learner = PortfolioLearner(tmp_path, parser=ScopedParser())
+    start = learning.event_from(CLIENT, "advisor_request", {}, {"event_id": "changed"}, STATEMENT, "agent")
+    assert learner.process_event(start)["status"] == "ok"
+    completed = {**start, "revision": 2, "outcome": "success", **changed_fields}
+    result = learner.process_event(completed)
+    assert result["status"] == "ok"
+    assert calls == [(STATEMENT, None), (completed["user_text"], completed["scope"])]
+    assert "reused_from_revision" not in result["extraction"]["parser"]
+
+
 def test_historical_correction_remains_reviewable_without_blocking_valid_update(api):
     learner = learning.adapter_for(FACTORY, str(learning.workspace())).learner
     text = "Withdraw MISSING-01 because it was incorrect."

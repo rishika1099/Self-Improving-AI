@@ -1,15 +1,21 @@
 """Regression coverage for the audited delivery through the real Portfolio A API."""
 
+import asyncio
+from io import BytesIO
 import json
 from unittest.mock import MagicMock
+from urllib.error import HTTPError
 
 import pytest
 from fastapi.testclient import TestClient
 
 from self_improving_ai.agents.portfolio import application, learning
 from self_improving_ai.agents.portfolio.preference_learning import PortfolioLearner
+from self_improving_ai.agents.portfolio.preference_learning import extract_signals, provider_backoff
 from self_improving_ai.agents.portfolio.preference_learning.adapter import create_adapter
 from self_improving_ai.agents.portfolio.preference_learning.parser import GeminiParser
+from self_improving_ai.agents.portfolio.service import run_portfolio_agent
+from self_improving_ai.config import settings
 from self_improving_ai.dashboard.app import app
 from tests.test_agents.test_portfolio_agent import ScriptedModel
 
@@ -196,6 +202,10 @@ def test_verified_account_reaches_provider_and_unknown_scope_is_reviewable(api, 
 
     def fake_provider(request, *, timeout):
         payload = json.loads(request.data)
+        schema = payload["generationConfig"]["responseJsonSchema"]
+        scope_schema = schema["properties"]["signals"]["items"]["properties"]["scope"]
+        assert scope_schema["properties"]["applicability"]["enum"] == ["ongoing", "current"]
+        assert scope_schema["additionalProperties"] is False
         instructions = payload["systemInstruction"]["parts"][0]["text"]
         scope = {"account_id": "ACC-001A"} if '"account_id": "ACC-001A"' in instructions else {"unresolved": True}
         reply = signal(ACCOUNT, scope=scope)
@@ -219,6 +229,63 @@ def test_verified_account_reaches_provider_and_unknown_scope_is_reviewable(api, 
     scoped = learner.get_context(CLIENT, {"account_id": "ACC-001A"})
     assert scoped["team_declared"][0]["source_event_id"] == "bound"
     assert opener.open.call_count == 2
+
+
+@pytest.mark.parametrize("scope, status", [
+    ({"account_id": None, "goal_id": None, "unresolved": False, "applicability": "long_term"}, "ok"),
+    ({"unresolved": True, "applicability": "long_term"}, "needs_review"),
+    ({"account_id": "invented", "unresolved": False, "applicability": "long_term"}, "partial"),
+])
+def test_observed_legacy_scope_shape_preserves_account_validation(scope, status):
+    event = learning.event_from(CLIENT, "client_statement", {}, {}, STATEMENT, "advisor_note")
+    result = extract_signals(event, lambda text: [signal(text, scope=scope)])
+    assert result["status"] == status
+    if status == "ok":
+        assert result["signals"][0]["scope"] is None
+    else:
+        assert not result["signals"]
+
+
+def test_provider_quota_cooldown_preserves_pending_note_and_recovers_on_retry(api, monkeypatch):
+    model, credential = "gemini-quota-fixture", "synthetic-shared-quota-key"
+    monkeypatch.setenv("SIA_PORTFOLIO_API_KEY", credential)
+    monkeypatch.setattr(settings, "portfolio_model", model)
+    monkeypatch.setattr(provider_backoff, "_waits", {})
+    now = [1_800_000_000]
+    monkeypatch.setattr(provider_backoff, "time", lambda: now[0])
+    learner = learning.adapter_for(FACTORY, str(learning.workspace())).learner
+    learner.parser = GeminiParser(model, api_key=credential)
+    opener = MagicMock()
+    success = MagicMock()
+    success.__enter__.return_value.read.return_value = json.dumps({"candidates": [
+        {"finishReason": "STOP", "content": {"parts": [{"text": json.dumps({"signals": [signal(STATEMENT)]})}]}}
+    ]}).encode()
+    retry_info = {"error": {"details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo",
+                                        "retryDelay": "42.1s"}]}}
+    opener.open.side_effect = [
+        HTTPError("https://generativelanguage.googleapis.com/", 429, "synthetic provider error",
+                  {"Retry-After": "10"}, BytesIO(json.dumps(retry_info).encode())),
+        success,
+    ]
+    monkeypatch.setattr("self_improving_ai.agents.portfolio.preference_learning.parser.request.build_opener",
+                        lambda *_: opener)
+
+    original = note(api, STATEMENT, "rate-limited-note")
+    assert original["learning"]["status"] == "processing_pending"
+    waiting = api.post(f"{API}/retry").json()
+    detail = waiting["events"][0]["update"]["issues"][-1]
+    assert waiting["pending_count"] == 1 and detail["code"] == "model_rate_limited"
+    assert opener.open.call_count == 1
+    run = asyncio.run(run_portfolio_agent("Calculate for a synthetic client", client_id=CLIENT))
+    assert run["result"]["error"]["code"] == "MODEL_RATE_LIMITED"
+    assert run["result"]["error"]["retry_at"] == detail["retry_at"]
+    assert run["result"]["error"]["retryable"]
+
+    now[0] += 43
+    completed = api.post(f"{API}/retry").json()
+    assert opener.open.call_count == 2
+    assert completed["pending_count"] == 0
+    assert completed["context"]["team_declared"][0]["source_event_id"] == "rate-limited-note"
 
 
 def test_portfolio_agent_receives_and_loses_saved_context_after_retraction(api, monkeypatch):

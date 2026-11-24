@@ -41,6 +41,10 @@ export default function CustomerLearning({client,clientName,group,refresh,disabl
   const latest=new Map();
   for(const row of rows)if(row.kind==='event')latest.set(row.event_id,row);
   const retracts=new Map(rows.filter(r=>r.kind==='retract').map(r=>[r.event_id,r]));
+  const providerIssue = [...latest.values()]
+    .filter(row => row.delivery_status === 'pending' && !retracts.has(row.event_id))
+    .flatMap(row => row.update?.issues || [])
+    .find(issue => issue.retry_at && ['model_rate_limited', 'model_busy'].includes(issue.code));
   const context=view?.context;
   const names={risk_tilt:'风险倾向',adjustment_style:'调整方式',maximum_loss_limit:'最大损失限制',adopted_target_allocation:'已接受的目标配置',conservative:'保守',balanced:'均衡',growth:'较高风险暴露',gradual:'分阶段调整',flexible:'可接受一次较大调整'};
   const printable=x=>typeof x==='string'||typeof x==='number'?String(x):JSON.stringify(x??'暂未确定');
@@ -49,6 +53,10 @@ export default function CustomerLearning({client,clientName,group,refresh,disabl
   return <section className="customer-learning" aria-label="客户偏好学习">
     <h3>客户偏好学习</h3>
     <p role="status">{view ? labels[view.status]||view.status : error?'客户记录读取失败，请重试':'正在读取客户记录…'}</p>
+    {providerIssue && <p role="status">
+      {providerIssue.code === 'model_rate_limited' ? 'Gemini 请求已达限额。' : 'Gemini 暂时繁忙。'}
+      记录已保存，建议在 {new Date(providerIssue.retry_at).toLocaleTimeString()} 后重试。
+    </p>}
     <p>当前客户：{clientName||client} · 待处理记录：{view?.pending_count??'—'}{view?.review_count ? ` · 需确认记录：${view.review_count}` : ''}。记录操作不代表客户已接受或执行方案。</p>
     <label>补充客户说明<textarea aria-label="补充客户说明" value={note} maxLength={3000} disabled={busy||disabled} onChange={e=>setNote(e.target.value)} placeholder="例如：该客户整体比较保守。也可以记录假设或纠正，含义由学习模块判断。"/></label>
     <div className="learning-actions">

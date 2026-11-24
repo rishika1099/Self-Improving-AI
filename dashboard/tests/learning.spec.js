@@ -98,3 +98,20 @@ test('structured context values cannot crash the learning panel',async({page})=>
   await expect(page.locator('.customer-learning')).toContainText('constructor');
   await expect(page.locator('.customer-learning')).toContainText('unknown');
 });
+
+test('a rate-limited note stays visible while waiting to retry',async({page})=>{
+  const retryAt='2030-01-01T12:35:00Z';
+  const userText='这个客户整体比较保守。';
+  await page.route('**/api/portfolio/learning/CLI-002',route=>route.fulfill({json:{
+    client_id:'CLI-002',status:'processing_pending',pending_count:1,
+    events:[{kind:'event',event_id:'rate-limited-note',delivery_status:'pending',
+      event:{user_text:userText,occurred_at:'2030-01-01T12:34:00Z'},
+      update:{issues:[{code:'model_rate_limited',retry_at:retryAt}]}}],
+  }}));
+  await page.getByLabel('Client',{exact:true}).selectOption('CLI-002');
+  const learning=page.getByRole('region',{name:'客户偏好学习'});
+  const retryTime=await page.evaluate(value=>new Date(value).toLocaleTimeString(),retryAt);
+  await expect(learning.getByText('Gemini 请求已达限额。',{exact:false})).toContainText(retryTime);
+  await expect(learning.locator('.learning-event')).toContainText(userText);
+  await expect(learning.getByRole('button',{name:'重试待处理记录'})).toBeEnabled();
+});

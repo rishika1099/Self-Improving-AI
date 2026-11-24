@@ -2,6 +2,7 @@
 import json
 
 import pytest
+from google.adk.models.llm_response import LlmResponse
 from google.genai import errors
 
 from self_improving_ai.agents.portfolio.model_errors import classify_model_error
@@ -41,4 +42,20 @@ async def test_agent_reports_busy_instead_of_generic_configuration_failure(monke
     assert run["status"]=="error"
     assert run["result"]["error"]["code"]=="MODEL_BUSY"
     assert run["trace"]==[]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("provider_message", "expected_code"), [
+    ("429 RESOURCE_EXHAUSTED. sensitive-provider-detail", "MODEL_RATE_LIMITED"),
+    ("503 UNAVAILABLE. sensitive-provider-detail", "MODEL_BUSY"),
+])
+async def test_agent_preserves_retryable_provider_status_from_adk_event(provider_message, expected_code):
+    class FailedModel(ScriptedModel):
+        async def generate_content_async(self, llm_request, stream=False):
+            yield LlmResponse(error_code="UNKNOWN", error_message=provider_message)
+
+    result = await run_portfolio_agent("Synthetic allocation", model=FailedModel())
+    assert result["result"]["error"]["code"] == expected_code
+    assert result["result"]["error"]["retryable"]
+    assert "sensitive-provider-detail" not in json.dumps(result)
 

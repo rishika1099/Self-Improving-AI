@@ -59,7 +59,10 @@ def extract_signals(event, parse_text=None):
                 items = [_validate_text(item, event) for item in result]
             except ParseError as exc:
                 status = "needs_review" if exc.code == "scope_unresolved" else "pending"
-                issues.append(issue(exc.code, str(exc)))
+                detail = issue(exc.code, str(exc))
+                if exc.retry_at:
+                    detail["retry_at"] = exc.retry_at
+                issues.append(detail)
             except TimeoutError:
                 status = "pending"
                 issues.append(issue("model_timeout", "Text parsing timed out."))
@@ -149,9 +152,18 @@ def _validate_text(raw, event):
         raise ValueError("Every semantic signal needs an exact excerpt from the original request.")
     if not isinstance(i["reason"], str) or not i["reason"].strip():
         raise ValueError("Every semantic signal needs a reason.")
-    if i["scope"] == {"unresolved": True}:
-        raise ParseError("scope_unresolved", "Bind the named account or goal before applying this input.")
-    scope = normalize_scope(i["scope"])
+    raw_scope = i["scope"]
+    if isinstance(raw_scope, dict):
+        unresolved = raw_scope.get("unresolved", False)
+        if type(unresolved) is not bool:
+            raise ValueError("scope.unresolved must be a boolean.")
+        if unresolved:
+            raise ParseError("scope_unresolved", "Bind the named account or goal before applying this input.")
+        raw_scope = {k: v for k, v in raw_scope.items() if k != "unresolved"}
+        # Normalize the observed legacy Gemini alias without changing identity checks.
+        if raw_scope.get("applicability") == "long_term":
+            raw_scope["applicability"] = "ongoing"
+    scope = normalize_scope(raw_scope)
     source_scope = event_scope(event) or {}
     if scope:
         for k in ("account_id", "goal_id", "analysis_id"):

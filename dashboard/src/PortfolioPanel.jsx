@@ -60,7 +60,12 @@ export default function PortfolioPanel({clients}) {
       lastAttempt.current.confirmed=true;
       setRun(data);
       setLearningRefresh(v=>v+1);
-      if (data.status === "error") setError(data.result?.error?.message || "This request is unavailable.");
+      if (data.status === "error") {
+        const failure = data.result?.error;
+        const message = failure?.message || "This request is unavailable.";
+        const retryTime = failure?.retry_at ? new Date(failure.retry_at).toLocaleTimeString() : null;
+        setError(retryTime ? `${message} Retry after ${retryTime}.` : message);
+      }
     } catch (exception) {if(pending.current===controller&&exception.kind!=="cancelled")setError(exception.message || "Could not reach the service.");}
     finally {if(pending.current===controller){pending.current=null;setBusy(false);}}
   }

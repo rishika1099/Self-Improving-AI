@@ -9,9 +9,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from self_improving_ai.agents.portfolio.answer_validation import unsupported_currency_amounts
-from self_improving_ai.agents.portfolio.model_errors import classify_model_error, model_failure
+from self_improving_ai.agents.portfolio.model_errors import (
+    classify_model_error, model_failure, provider_transient_failure, transient_provider_status,
+)
 from self_improving_ai.agents.portfolio.model_settings import portfolio_api_key
+from self_improving_ai.agents.portfolio.preference_learning.provider_backoff import active_wait, remember_wait
 from self_improving_ai.agents.portfolio.provenance import run_metadata
+from self_improving_ai.config import settings
 from self_improving_ai.tools.portfolio.allocation import calculate_allocation_drift
 from self_improving_ai.tools.portfolio.holdings import get_holdings
 from self_improving_ai.tools.portfolio.market_data_api import (
@@ -63,10 +67,34 @@ async def run_portfolio_agent(message: str, *, model=None, lessons: str = "", cl
            "response": "", "model_tokens": 0, "metadata": run_metadata(lessons),
            "model_responses": 0, "elapsed_seconds": 0.,
            "task_outcome": "not_scored"}
-    if model is None and not portfolio_api_key():
+    key = portfolio_api_key() if model is None else ""
+    if model is None and not key:
         run["result"] = model_failure("MISSING_MODEL_CONFIGURATION", "Configure Gemini in Connections before running the Agent.")
         run["elapsed_seconds"] = time.perf_counter() - started
         return run
+    if key and (wait := active_wait(key, settings.portfolio_model)):
+        run["result"] = provider_transient_failure(wait.status, retry_at=wait.retry_at)
+        run["elapsed_seconds"] = time.perf_counter() - started
+        return run
+
+    def transient_failure(status, exc=None):
+        wait = None
+        if key:
+            response = getattr(exc, "response", None)
+            wait = remember_wait(key, run["model"] or settings.portfolio_model, status,
+                                 headers=getattr(response, "headers", None),
+                                 payload=getattr(exc, "details", None))
+        return provider_transient_failure(status, retry_at=wait.retry_at if wait else None)
+
+    provider_failure = None
+
+    def capture_model_error(callback_context, llm_request, error):
+        nonlocal provider_failure
+        status = transient_provider_status(getattr(error, "code", None), getattr(error, "message", ""))
+        if status:
+            provider_failure = transient_failure(status, error)
+        # Let ADK finish reporting the failed invocation.
+        return None
     try:
         from google.adk import Runner
         from google.adk.agents.run_config import RunConfig
@@ -79,6 +107,7 @@ async def run_portfolio_agent(message: str, *, model=None, lessons: str = "", cl
                                         account_id=account_id)
                  if client_id else create_portfolio_agent(model))
         run["model"] = agent.model.model if model is None else type(model).__name__
+        agent.on_model_error_callback = capture_model_error
         sessions = InMemorySessionService()
         session = await sessions.create_session(app_name="component_a", user_id="local_advisor",
             state={"relevant_lessons": lessons, "skill_procedures": "", "tool_preferences": ""})
@@ -88,7 +117,13 @@ async def run_portfolio_agent(message: str, *, model=None, lessons: str = "", cl
                     new_message=types.Content(role="user", parts=[types.Part(text=message)]),
                     run_config=RunConfig(max_llm_calls=12)):
                 if event.error_code:
-                    run["result"] = model_failure("MODEL_RESPONSE_ERROR", "The model returned an error response.")
+                    status = transient_provider_status(event.error_code, event.error_message)
+                    if provider_failure:
+                        run["result"] = provider_failure
+                    elif status:
+                        run["result"] = transient_failure(status)
+                    else:
+                        run["result"] = model_failure("MODEL_RESPONSE_ERROR", "The model returned an error response.")
                     break
                 for call in event.get_function_calls():
                     run["trace"].append({"kind": "call", "id": call.id,
@@ -122,6 +157,7 @@ async def run_portfolio_agent(message: str, *, model=None, lessons: str = "", cl
     except Exception as exc:
         # SDK exceptions may contain request details or credentials.
         run["status"] = "error"
-        run["result"] = classify_model_error(exc)
+        status = transient_provider_status(getattr(exc, "code", None), getattr(exc, "message", ""))
+        run["result"] = provider_failure or (transient_failure(status, exc) if status else classify_model_error(exc))
     run["elapsed_seconds"] = time.perf_counter() - started
     return run

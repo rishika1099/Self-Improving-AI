@@ -6,12 +6,57 @@ import os
 import re
 from urllib import request, error
 from .prompts import SYSTEM_PROMPT, PROMPT_VERSION
+from .provider_backoff import active_wait, remember_wait
+
+
+EXTRACTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["signals"],
+    "properties": {
+        "signals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_text", "reason"],
+                "properties": {
+                    "kind": {"type": "string"},
+                    "dimension": {"type": "string"},
+                    "value": {"type": ["string", "null"]},
+                    "assertion": {"type": "string"},
+                    "scope": {
+                        "type": ["object", "null"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "account_id": {"type": "string"},
+                            "goal_id": {"type": "string"},
+                            "applicability": {"type": "string", "enum": ["ongoing", "current"]},
+                            "unresolved": {"type": "boolean"},
+                        },
+                    },
+                    "evidence_text": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "target_event_id": {"type": "string"},
+                },
+            },
+        },
+    },
+}
 
 
 class ParseError(Exception):
-    def __init__(self, code, message):
+    def __init__(self, code, message, *, retry_at=None):
         super().__init__(message)
         self.code = code
+        self.retry_at = retry_at
+
+
+def _provider_parse_error(wait):
+    if wait.status == 429:
+        return ParseError("model_rate_limited", "Gemini quota or request limits were reached.",
+                          retry_at=wait.retry_at)
+    return ParseError("model_busy", "Gemini is temporarily busy.", retry_at=wait.retry_at)
 
 
 @dataclass(frozen=True)
@@ -57,6 +102,8 @@ class GeminiParser:
         key = key.strip()
         if not key or not self.model:
             raise ParseError("model_configuration_missing", "Set a Gemini key and model ID.")
+        if wait := active_wait(key, self.model):
+            raise _provider_parse_error(wait)
         bindings = {field: scope[field] for field in ("account_id", "goal_id")
                     if scope and field in scope}
         instruction = SYSTEM_PROMPT
@@ -64,7 +111,8 @@ class GeminiParser:
             instruction += "\nCaller-verified scope IDs: " + json.dumps(bindings, ensure_ascii=False)
         payload = {"systemInstruction":{"parts":[{"text":instruction}]},
                    "contents":[{"role":"user","parts":[{"text":text}]}],
-                   "generationConfig":{"responseMimeType":"application/json","maxOutputTokens":2048}}
+                   "generationConfig":{"responseMimeType":"application/json",
+                                       "responseJsonSchema":EXTRACTION_SCHEMA,"maxOutputTokens":2048}}
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         req = request.Request(url, data=json.dumps(payload).encode(), headers={
             "x-goog-api-key":key, "Content-Type":"application/json"}, method="POST")
@@ -77,6 +125,15 @@ class GeminiParser:
             raw = "".join(p.get("text", "") for p in first["content"]["parts"] if not p.get("thought"))
             return ParsePacket(raw.replace(key, "[REDACTED]"), "gemini_live", self.model, PROMPT_VERSION)
         except error.HTTPError as exc:
+            if exc.code in {429, 503}:
+                try:
+                    payload = json.loads(exc.read(65536))
+                except (OSError, ValueError, TypeError):
+                    payload = None
+                finally:
+                    exc.close()
+                wait = remember_wait(key, self.model, exc.code, headers=exc.headers, payload=payload)
+                raise _provider_parse_error(wait) from None
             raise ParseError("model_http_error", f"Provider HTTP status: {exc.code}.") from None
         except TimeoutError:
             raise ParseError("model_timeout", "Model call timed out.") from None

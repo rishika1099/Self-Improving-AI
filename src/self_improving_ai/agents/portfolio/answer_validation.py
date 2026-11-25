@@ -8,7 +8,8 @@ from __future__ import annotations
 import math
 import re
 
-MONEY_FIELDS = {"market_value", "total_market_value", "cost_basis", "price", "close",
+MONEY_FIELDS = {"stock_fall_usd", "stock_rise_usd", "upside_change_usd", "downside_change_usd",
+                "market_value", "total_market_value", "cost_basis", "price", "close",
                 "hypothetical_adjustment_usd", "initial_value", "target_amount",
                 "annual_contribution", "annual_withdrawal", "ending_value_p10",
                 "ending_value_median", "ending_value_p90", "median", "annual_income"}

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import ConnectionSettings from "./ConnectionSettings";
 import {RiskInterpretation} from "./PreferenceEvidence";
+import {ScenarioCheck} from "./WorkingRisk";
 import CustomerLearning from "./CustomerLearning";
 import { requestJson } from "./connectionRequest";
 import "./portfolio.css";
@@ -19,8 +20,10 @@ export default function PortfolioPanel({clients}) {
   const [message, setMessage] = useState("Show the selected client's allocation drift against its stored draft target.");
   const [textSource,setTextSource]=useState('default');
   const [group,setGroup]=useState(()=>crypto.randomUUID());
+  const activityTime=useRef(Date.now());
   const [learningRefresh,setLearningRefresh]=useState(0);
   const [run, setRun] = useState(null);
+  const [scoreHost,setScoreHost] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -48,13 +51,17 @@ export default function PortfolioPanel({clients}) {
       const scenario = Object.fromEntries(Object.entries(overrides).filter(([,value])=>value !== "").map(([key,value])=>[key,Number(value)]));
       if (scenario.target_stock_weight !== undefined) scenario.target_stock_weight /= 100;
       const market=task==='history'?{symbol,start_date:start,end_date:end}:task==='quote'?{symbol}:{};
-      const requestKey=JSON.stringify({mode,message,client,task,symbol,start,end,scenario,group,textSource,marketSources});
+      const idle=Date.now()-activityTime.current;
+      const round=idle>30*60*1000 && lastAttempt.current?.confirmed!==false ? crypto.randomUUID() : group;
+      if(round!==group)setGroup(round);
+      activityTime.current=Date.now();
+      const requestKey=JSON.stringify({mode,message,client,task,symbol,start,end,scenario,group:round,textSource,marketSources});
       if(lastAttempt.current?.key!==requestKey||lastAttempt.current?.confirmed)lastAttempt.current={key:requestKey,id:crypto.randomUUID(),confirmed:false};
       const requestId=lastAttempt.current.id;
       const data = await requestJson(`/api/portfolio/${mode === "agent" ? "agent" : "execute"}`, {
         method:"POST",signal:controller.signal,timeoutMs:mode==="agent"?125000:15000,
         timeoutMessage:"Analysis timed out. You can retry or choose another model in Connections.",
-        body: JSON.stringify(mode === "agent" ? {message,client_id:client,observation:{event_id:requestId,evidence_group_id:group,text_source:textSource}} : {task, client_id:client,...market,...scenario,observation:{event_id:requestId,evidence_group_id:group,parameter_sources:{...Object.fromEntries(Object.keys(market).map(k=>[k,marketSources[k]])),...Object.fromEntries(Object.keys(scenario).map(k=>[k,'manual']))}}})
+        body: JSON.stringify(mode === "agent" ? {message,client_id:client,observation:{event_id:requestId,evidence_group_id:round,text_source:textSource}} : {task, client_id:client,...market,...scenario,observation:{event_id:requestId,evidence_group_id:round,parameter_sources:{...Object.fromEntries(Object.keys(market).map(k=>[k,marketSources[k]])),...Object.fromEntries(Object.keys(scenario).map(k=>[k,'manual']))}}})
       });
       if(pending.current!==controller) return;
       if(!["success","error"].includes(data?.status)) throw new Error("The service returned an incomplete analysis. Try again.");
@@ -74,6 +81,7 @@ export default function PortfolioPanel({clients}) {
   return <section className="portfolio-panel">
     <div className="portfolio-heading"><h2>Portfolio Analysis</h2><button type="button" className="portfolio-connections-button" disabled={busy} onClick={()=>setConnectionsOpen(true)}>Connections</button></div>
     <p>Synthetic households · Draft assumptions · Hypothetical adjustments only</p>
+    <div ref={setScoreHost}/>
     {connectionsOpen&&<ConnectionSettings onClose={()=>setConnectionsOpen(false)} onChanged={()=>{setRun(null);setError("");}}/>}
     <form onSubmit={submit} className="portfolio-form">
       <label>Workflow<select aria-label="Workflow" value={mode} disabled={busy} onChange={e=>reset(setMode)(e.target.value)}>
@@ -114,9 +122,11 @@ export default function PortfolioPanel({clients}) {
       {result?.source && <p>Source: {result.source}{result.assumptions_version ? ` · Assumptions: ${result.assumptions_version}` : ""}</p>}
       {result?.warnings?.map((text,i)=><p className="portfolio-warning" key={i}>{text}</p>)}
       {run.response && <p className="portfolio-answer">{run.response}</p>}
+      <ScenarioCheck analysis={result?.personalized_analysis || run.trace?.findLast(
+        e=>e.kind==='result' && e.result?.personalized_analysis)?.result.personalized_analysis}/>
       <details><summary>Execution evidence</summary><pre>{JSON.stringify({run_id:run.run_id,status:run.status,metadata:run.metadata,trace:run.trace},null,2)}</pre></details>
     </div>}
     <button className="learning-new-round" type="button" disabled={busy} onClick={()=>{setGroup(crypto.randomUUID());setNotice('已开始新一轮分析。是否属于独立证据仍由学习模块判断。');}}>开始新一轮分析</button>
-    <CustomerLearning key={client} client={client} clientName={clients.find(c=>c.client_id===client)?.profile.name} group={group} refresh={learningRefresh} disabled={busy}/>
+    <CustomerLearning key={client} client={client} clientName={clients.find(c=>c.client_id===client)?.profile.name} group={group} refresh={learningRefresh} disabled={busy} scoreHost={scoreHost}/>
   </section>;
 }

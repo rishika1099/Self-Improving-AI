@@ -206,7 +206,32 @@ class PortfolioLearner:
     def get_context(self, client_id, scope=None):
         checked_id(client_id, "client_id")
         with closing(self._connect()) as db:
-            return build_context(self._state(db,client_id),scope,self.rules)
+            db.execute("BEGIN")
+            state = self._state(db,client_id)
+            context = build_context(state,scope,self.rules)
+            has_notes = db.execute("SELECT 1 FROM events WHERE client=? AND "
+                                   "json_extract(extraction,'$.event.entry_point')='advisor_note' LIMIT 1",
+                                   (client_id,)).fetchone()
+            if has_notes:
+                history = self._history(db, client_id)
+                context["risk_source_scores"] = {
+                    key: self._source_scores(state, history, scope, notes)
+                    for key, notes in (("operations", False), ("notes", True))}
+            return context
+
+    def _source_scores(self, state, history, scope, notes):
+        # Keep event identities, scopes and corrections in both histories. Only risk
+        # evidence from the requested source competes for a group's effective vote.
+        entries = []
+        for entry in history["extractions"]:
+            if (entry["event"]["entry_point"] == "advisor_note") == notes:
+                entries.append(entry)
+            else:
+                signals = [{**s, "dimension":"attention","kind":"source_scope"}
+                           if s["dimension"] == "risk_tilt" else s for s in entry["signals"]]
+                entries.append({**entry,"signals":signals})
+        subset = rebuild_state(state, {**history,"extractions":entries}, self.rules)["state"]
+        return build_context(subset, scope, self.rules)["risk_preference_scores"]
 
     def retract_event(self, client_id, event_id, *, expected_profile_version=None, allow_missing=False):
         try:

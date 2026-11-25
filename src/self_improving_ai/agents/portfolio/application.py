@@ -8,6 +8,7 @@ from self_improving_ai.agents.portfolio.learning import (
     event_from, read_analysis_context, record_finish, record_start, valid_client,
 )
 from self_improving_ai.agents.portfolio.service import execute_task, run_portfolio_agent
+from self_improving_ai.agents.portfolio.analysis_focus import attach_scenarios
 
 _inflight = set()
 _request_lock = Lock()
@@ -64,13 +65,17 @@ def calculate_for_client(task, arguments, client_id, metadata):
     with request_slot(client_id,event['event_id']):
         # Capture the previously verified profile before this calculation creates a pending event.
         context = (read_analysis_context(client_id, arguments.get("account_id") or None, metadata.get("evidence_group_id"))
-                   if task == "risk" else None)
+                   if task in {"holdings", "allocation", "risk"} else None)
         journal, cached = record_start(event)
         if cached is not None:
             return cached
         run = execute_task(task,arguments)
         if context is not None:
             run["learning_context_used"] = context
+            result = attach_scenarios(run["result"], context.get("context"), client_id, arguments.get("account_id"))
+            run["result"] = result
+            if run["trace"]:
+                run["trace"][-1]["result"] = result
         return record_finish(journal,event,run)
 
 
@@ -89,7 +94,7 @@ async def analyze_for_client(message, client_id, metadata, *, account_id=None):
         # A model parse can outlast the short web write budget. Give the active write
         # a bounded chance to finish before answering with an unavailable snapshot.
         deadline = asyncio.get_running_loop().time() + 5
-        while context.get("status") == "module_busy" and asyncio.get_running_loop().time() < deadline:
+        while context.get("status") in {"module_busy", "processing_pending"} and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(.25)
             context = await asyncio.to_thread(read_analysis_context, client_id, account_id, metadata.get("evidence_group_id"))
         run = await run_portfolio_agent(message, client_id=client_id, learning_context=context,

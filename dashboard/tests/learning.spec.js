@@ -5,6 +5,36 @@ test.beforeEach(async({page})=>{
   await page.getByRole('button',{name:'Portfolio Analysis',exact:true}).click();
 });
 
+test('ordinary actions update the visible score and change the supplemental calculation',async({page})=>{
+  test.skip(!process.env.PORTFOLIO_BROWSER_FACTORY,'Runs against a separate fresh learning database');
+  const score=page.getByRole('region',{name:'客户激进程度'});
+  const plan=page.getByRole('region',{name:'根据评分加算的情景'});
+  await expect(score).toContainText('暂无方向证据');
+  await page.getByLabel('Stock target (%)').fill('60');
+  await page.getByRole('button',{name:'Run analysis',exact:true}).click();
+  await expect(score).toContainText('43.4');
+  await page.getByLabel('Analysis',{exact:true}).selectOption('holdings');
+  await page.getByRole('button',{name:'Run analysis',exact:true}).click();
+  await expect(plan).toContainText('加算 · 减少股票');
+  await expect(plan).toContainText('$1,761');
+  await score.getByRole('button',{name:'调整评分'}).click();
+  const slider=score.getByRole('slider');
+  await slider.press('End');
+  for(let i=0;i<25;i++) await slider.press('ArrowLeft');
+  await score.getByRole('button',{name:'保存评分'}).click();
+  await expect(score).toContainText('顾问上次调至 75');
+  await page.getByRole('button',{name:'Run analysis',exact:true}).click();
+  await expect(plan).toContainText('加算 · 增加股票');
+  await expect(plan).toContainText('$2,935');
+  await page.reload();
+  await page.getByRole('button',{name:'Portfolio Analysis',exact:true}).click();
+  await expect(score).toContainText('顾问上次调至 75');
+  await score.getByRole('button',{name:'调整评分'}).click();
+  await score.getByRole('button',{name:'取消手动校准'}).click();
+  await expect(score).toContainText('43.4');
+  await expect(score).not.toContainText('顾问上次调至');
+});
+
 test('captures defaults and manual changes and exports all revisions',async({page})=>{
   await page.getByRole('button',{name:'Run analysis',exact:true}).click();
   await expect(page.locator('.portfolio-results')).toContainText('$146,750.00');

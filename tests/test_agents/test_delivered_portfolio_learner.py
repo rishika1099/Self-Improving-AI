@@ -64,7 +64,11 @@ def test_configured_factory_uses_delivered_learner_and_preserves_actual_calculat
     context = api.get(API).json()["context"]
     assert context["team_declared"][0]["value"] == "conservative"
     assert api.get("/api/portfolio/learning/CLI-002").json()["context"]["team_declared"] == []
-    assert PortfolioLearner(learning.workspace() / "learner").get_context(CLIENT) == context
+    assert context["working_risk_index"]["automatic"] == context["risk_source_scores"]["operations"][0]["score"]
+    assert context["working_risk_index"]["reference"] == pytest.approx(
+        .85*context["working_risk_index"]["automatic"] + .15*context["working_risk_index"]["note_score"])
+    assert PortfolioLearner(learning.workspace() / "learner").get_context(CLIENT) == {
+        k:v for k,v in context.items() if k != "working_risk_index"}
     assert api.post(f"{API}/retract/statement").json()["context"]["team_declared"] == []
 
 
@@ -320,7 +324,118 @@ def test_portfolio_agent_receives_and_loses_saved_context_after_retraction(api, 
         elif i == 1:
             api.post(f"{API}/retract/comparison-statement").raise_for_status()
     assert first_turn == [False, True, False]
+    assert [r.pop("personalized_analysis")["focus"] for r in runs] == ["compare", "downside", "compare"]
     assert runs[0] == runs[1] == runs[2]
+
+
+def test_ordinary_use_calibration_and_personalized_scenarios(api):
+    def context():
+        return api.get(API).json()["context"]
+    def adjust(chosen):
+        ctx = context()
+        payload = {"score":chosen, "revision":ctx["working_risk_index"]["calibration"]["revision"],
+                   "profile_version":ctx["profile_version"]}
+        api.post(API+"/risk-calibration", json=payload).raise_for_status()
+        assert api.post(API+"/risk-calibration", json=payload).status_code == 409
+    def compute(task, name, weight=None):
+        payload = {"client_id":CLIENT, "task":task, "observation":{"event_id":name,"evidence_group_id":name}}
+        if weight is not None:
+            payload.update(target_stock_weight=weight)
+            payload["observation"]["parameter_sources"] = {"target_stock_weight":"manual"}
+        return api.post("/api/portfolio/execute", json=payload).json()["result"]
+    assert context()["working_risk_index"]["effective"] is None
+    compute("risk", "plain")
+    assert context()["working_risk_index"]["effective"] is None
+    compute("risk", "lower", .60)
+    before = context()["working_risk_index"]["automatic"]
+    assert 43 < before < 44
+    result = compute("holdings","positions")["personalized_analysis"]
+    assert result["focus"] == "downside"
+    assert result["scenario_step_pp"] == 6 and result["rows"][-1]["stock_fall_usd"] == -15849
+    assert result["rows"][-1]["downside_change_usd"] == 1761
+    adjust(72)
+    assert context()["working_risk_index"]["effective"] == 72
+    higher=compute("allocation","higher",.95)["personalized_analysis"]
+    assert higher["score_used"] == 72 and higher["rows"][-1]["stock_weight"] == 1
+    changed=context()["working_risk_index"]
+    assert changed["effective"] == pytest.approx(72 + changed["automatic"] - before)
+    assert changed["effective"] > 72
+    assert api.get("/api/portfolio/learning/CLI-002").json()["context"]["working_risk_index"]["effective"] is None
+    adjust(None)
+    restored=context()["working_risk_index"]
+    assert restored["effective"] == restored["automatic"]
+
+
+def test_ordinary_chat_targets_need_verified_request_and_execution(api, monkeypatch):
+    message = "帮我把组合调到60/40，算一下差额。"
+    extracted = signal(message, kind="attention", dimension="attention", value="other",
+                       risk_basis="stock_target_inquiry", stock_target_pct=60)
+    monkeypatch.setattr("self_improving_ai.agents.portfolio.preference_learning.adapter.PortfolioParser.parse_scoped",
+                        lambda self, text, scope: [extracted])
+    async def scripted(message, **kwargs):
+        return await run_portfolio_agent(message, model=ScriptedModel(arguments={"client_id":CLIENT,
+                                         "target_stock_weight":.6}), **kwargs)
+    monkeypatch.setattr(application, "run_portfolio_agent", scripted)
+    data=api.post("/api/portfolio/agent",json={"client_id":CLIENT,"message":message,
+                  "observation":{"event_id":"chat","text_source":"manual"}}).json()
+    assert data["status"] == "success"
+    view=api.get(API).json()
+    assert 43 < view["context"]["working_risk_index"]["automatic"] < 44
+    event=view["events"][-1]["event"]
+    for changes in ({"text_source":"default"},{"execution_trace":[]},{"user_text":"只查持仓"}):
+        result=extract_signals({**event,**changes},lambda _: [extracted])
+        assert not any(s["dimension"]=="risk_tilt" for s in result["signals"])
+
+
+def test_directed_inquiry_with_second_topic_and_unusable_clause():
+    message="能不能找一个波动小一些的方案？另有学费要付。"
+    event=learning.event_from(CLIENT,"advisor_request",{},{"text_source":"manual"},message,"agent")
+    request=signal("能不能找一个波动小一些的方案？",risk_basis="directed_inquiry")
+    need=signal("另有学费要付。", kind="client_cue", dimension="attention",value="liquidity")
+    result=extract_signals(event, lambda _: [request,need,{"evidence_id":99}])
+    assert result["status"] == "ok"
+    assert [(s["value"],s["strength"]) for s in result["signals"]] == [("conservative","weak"),("liquidity","weak")]
+    assert any(i["code"]=="incomplete_coverage" for i in result["issues"])
+
+
+@pytest.mark.parametrize("text,pct", [("改成六成股票",60),("股票六成五",65),("试算百分之七十五",75),
+                        ("compare 60 percent stocks",60),("股债换成６０／４０",60),("债股比 40:60",60)])
+def test_chat_target_verifies_numeric_wording(text,pct):
+    from self_improving_ai.agents.portfolio.preference_learning.signals import mentioned_percentages
+    assert mentioned_percentages(text) == {pct}
+
+
+def test_notes_remain_secondary_even_in_same_analysis(api):
+    group={"evidence_group_id":"same-analysis"}
+    api.post("/api/portfolio/execute",json={"task":"risk","client_id":CLIENT,"target_stock_weight":.95,
+             "observation":{**group,"parameter_sources":{"target_stock_weight":"manual"}}}).raise_for_status()
+    def index():
+        return api.get(API).json()["context"]["working_risk_index"]
+    baseline=index()["automatic"]
+    assert baseline>50
+    api.post(API+"/notes",json={"message":STATEMENT,"observation":{**group,"event_id":"supplement"}}).raise_for_status()
+    combined=index()
+    assert combined["automatic"]==baseline
+    assert combined["reference"]==pytest.approx(.85*baseline + .15*(100/9.5))
+    api.post(API+"/retract/supplement").raise_for_status()
+    assert index()["effective"]==baseline
+
+
+def test_uncovered_compound_clause_is_retained_for_review():
+    from self_improving_ai.agents.portfolio.preference_learning.parser import ParsePacket
+    from self_improving_ai.agents.portfolio.preference_learning.prompts import PROMPT_VERSION
+    text="查一下波动，另外需要为教育支出预留现金。"
+    event=learning.event_from(CLIENT,"advisor_request",{},{"text_source":"manual"},text,"agent")
+    first=signal(text,kind="attention",dimension="attention",value="other",evidence_id=1)
+    second={**first,"evidence_id":2,"client_topic":"liquidity","reason":"实际支出需要现金"}
+    def parse(rows):
+        return extract_signals(event,lambda _: ParsePacket(json.dumps(rows),"scripted",prompt_version=PROMPT_VERSION))
+    missing=parse([first])
+    assert any(i["code"]=="incomplete_coverage" for i in missing["issues"])
+    assert any(s["evidence_text"]=="另外需要为教育支出预留现金。" for s in missing["signals"] if s["kind"]=="uninterpreted_excerpt")
+    complete=parse([first,second])
+    assert not complete["issues"]
+    assert any(s["kind"]=="client_cue" and s["value"]=="liquidity" for s in complete["signals"])
 
 
 @pytest.mark.asyncio

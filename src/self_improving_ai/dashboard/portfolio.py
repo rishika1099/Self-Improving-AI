@@ -142,6 +142,22 @@ class ReinterpretRequest(BaseModel):
     revision: int = Field(ge=1)
 
 
+class RiskCalibration(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    score: int | None = Field(ge=0, le=100)
+    revision: int = Field(ge=0)
+    profile_version: int = Field(ge=0)
+
+
+@router.post('/learning/{client_id}/risk-calibration')
+def calibrate_risk(client_id: str, request: RiskCalibration):
+    try:
+        require_client(client_id)
+        return Journal().calibrate(client_id, request.score, request.revision, request.profile_version)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post('/learning/{client_id}/reinterpret/{event_id}')
 def reinterpret_record(client_id: str, event_id: str, request: ReinterpretRequest):
     try:

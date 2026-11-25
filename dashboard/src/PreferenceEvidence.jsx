@@ -56,9 +56,10 @@ export function EventImpact({row,withdrawn}) {
     else if (s.kind === 'explicit_statement' || s.kind === 'preference_change') explanation = '团队说明 · ' + label(s.value);
     else explanation = describeEvidence(s);
     if (s.kind==='client_cue' && s.reason) explanation += '。提取理由：' + s.reason;
+    if (s.kind==='uninterpreted_excerpt') explanation='这部分尚未解读，已保留原话：'+s.evidence_text;
     return <li key={s.signal_id}>{explanation}</li>;
   })}</ul>{row.update.risk_score_changes?.length ? row.update.risk_score_changes.map(change=><p key={JSON.stringify(change.scope)}>
-      本次修订的风险意愿分（{scopeName(change.scope)}） {change.before?.toFixed(1) ?? '暂无分数'} → {change.after?.toFixed(1) ?? '暂无分数'}
+      历史综合证据分（含说明，{scopeName(change.scope)}） {change.before?.toFixed(1) ?? '暂无分数'} → {change.after?.toFixed(1) ?? '暂无分数'}
     </p>) : !signals.some(s=>s.dimension==='risk_tilt') && <p>对风险意愿分的直接贡献为 0。</p>}</>;
 }
 
@@ -80,6 +81,7 @@ export function RiskInterpretation({result,snapshot,onFollowUp}) {
   const emphasis = {conservative:'先看波动与本金承受能力，再看预期收益。',growth:'核对为争取收益而承担的波动是否在客户可接受范围内。',balanced:'把预期收益与波动放在一起，核对客户愿意承担的取舍。'};
   const comparison = result.scenario_comparison;
   const general = context?.risk_preference_scores?.find(s=>!s.scope);
+  const working = context?.scoped_risk_index || context?.working_risk_index;
   return <section aria-label="结合客户信息解读风险"><h4>这次风险计算怎么用</h4>
     <p>按当前持仓和草稿假设，组合年化波动率为 {pct(result.annual_volatility)}。这个指标描述组合收益的波动程度。</p>
     {comparison?.status==='success' && <div className="risk-comparison">
@@ -90,7 +92,7 @@ export function RiskInterpretation({result,snapshot,onFollowUp}) {
           <tr key={key}><th>{title}</th><td>{(result[key]*100).toFixed(2)}%</td><td>{(comparison[key]*100).toFixed(2)}%</td>
             <td>{comparison[delta]>0?'+':''}{comparison[delta].toFixed(2)}</td></tr>)}
       </tbody></table>
-      {general?.score!=null && <p>客户整体风险意愿分 {general.score.toFixed(1)} / 100{general.evidence.some(e=>e.legacy_text)?'（含待复核的旧分类）':''}。{general.evidence.some(e=>e.legacy_text) ? '先在客户风险意愿分中复核旧原话，再决定重点讨论哪项变化。' : general.support.conservative>Math.max(general.support.balanced,general.support.growth)
+      {!working && general?.score!=null && <p>客户整体风险意愿分 {general.score.toFixed(1)} / 100{general.evidence.some(e=>e.legacy_text)?'（含待复核的旧分类）':''}。{general.evidence.some(e=>e.legacy_text) ? '先在客户风险意愿分中复核旧原话，再决定重点讨论哪项变化。' : general.support.conservative>Math.max(general.support.balanced,general.support.growth)
         ? '讨论时先核对两种情景的波动差异，再确认客户能否接受相应的收益变化。'
         : general.support.growth>Math.max(general.support.balanced,general.support.conservative)
           ? '讨论时先核对两种情景的预期收益差异，再确认客户是否愿意承担相应波动。'
@@ -98,9 +100,9 @@ export function RiskInterpretation({result,snapshot,onFollowUp}) {
       {general?.status==='conflict' && <p>客户风险证据有分歧。先核实原话，再讨论两个情景的取舍。</p>}
     </div>}
     {!context ? <p>本次未取得可用的客户资料，适配性仍待核实。</p> : <>
-      {risk && general?.status!=='conflict' && !general?.evidence.some(e=>e.legacy_text) && <p>已记录的风险倾向为{label(risk.value)}（依据「{risk.evidence_text}」）。{emphasis[risk.value]}</p>}
+      {risk && general?.status!=='conflict' && !general?.evidence.some(e=>e.legacy_text) && <p>已记录的风险倾向为{label(risk.value)}（依据「{risk.evidence_text}」）。{!working && emphasis[risk.value]}</p>}
       {!risk && tentative && <p>目前只有暂定线索。{describeEvidence(tentative)}。请先与客户核实可接受的波动。</p>}
-      {!risk && !tentative && <p>客户风险倾向尚待了解，可询问其对组合价值起伏的接受程度。</p>}
+      {!risk && !tentative && working?.effective==null && <p>客户风险倾向尚待了解，可询问其对组合价值起伏的接受程度。</p>}
       {context.conflicts?.length>0 && <p>资料中有分歧，请在作出适配判断前核实相关原话。</p>}
       {liquidity && <p>客户提到「{liquidity.evidence_text}」。先确认用款时间和金额，再在 Goal projection 中试算相应提款。</p>}
       {income && <p>客户提到「{income.evidence_text}」。可核实需要的现金收入。年预期收益并非可提取的现金收入。</p>}

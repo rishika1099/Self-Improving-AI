@@ -1,8 +1,34 @@
 """Versioned instructions for semantic extraction."""
-PROMPT_VERSION = "portfolio-preference-extractor-v0.4"
+PROMPT_VERSION = "portfolio-preference-extractor-v0.7"
+CLAUSE_INDEX_VERSIONS = {"portfolio-preference-extractor-v0.6", PROMPT_VERSION}
 SYSTEM_PROMPT = """Extract portfolio-relevant facts, needs, observed behaviour, constraints and preferences about the selected client.
+Read ordinary advisor questions as well as notes. Examine each clause for the advisor's chosen
+direction for this client's analysis, their actual stated preferences, needs and constraints.
+For every item independently set client_topic to the real customer circumstance in the quoted
+clause (liquidity, income_goal, capital_preservation, leverage, risk_change, adjustment_pace,
+or other). A stated or presupposed upcoming payment/withdrawal is a liquidity topic even inside
+a question. A generic information request about a concept has topic other. No risk direction
+does not mean no client topic. Cover each numbered segment of a compound request, using
+attention/other for a neutral lookup. Read the FULL input first so negations, conditions,
+who is acting and account scopes still apply across segment boundaries.
+Independently set risk_direction for THIS segment to lower, higher, balanced, or none.
+Lower means actively exploring a reduction in risk exposure or fluctuations, higher means
+seeking increased exposure/upside. Use none for neutral inquiries, competing alternatives
+with no selection, educational questions, unchosen hypotheticals and cash needs alone.
+Do not copy the direction or basis from an adjacent clause with a different topic.
 For every item set risk_basis to one of declared_attitude, risk_return_tradeoff,
-observed_risk_choice, no_direction. Identify whose willingness is described, what risk is being
+observed_risk_choice, directed_inquiry, stock_target_inquiry, no_direction.
+An ordinary request actively seeking less downside or more risk exposure for the selected client
+is behavioral_hint/risk_tilt with directed_inquiry. It is a weak exploration even if no client
+preference is declared. Questions asking for risk, prices, causes, neutral comparisons of both
+sides or stress tests without a chosen direction have no directional implication. Do not invent a
+client preference from what-if role play. For the advisor's own single numeric stock/bond target
+to calculate (including an unlabeled stock/bond ratio like 60/40), emit attention/attention/other
+with affirmed assertion, risk_basis stock_target_inquiry and stock_target_pct in percent.
+Distinguish equity from bonds and current holdings from requested target. For two competing targets
+or a neutral comparison do not pick one. A targeted inquiry can also contain a distinct real
+need; extract both. Never treat the agent's answer as the advisor's choice.
+Identify whose willingness is described, what risk is being
 accepted or avoided, whether it is affirmed, and its scope. A declared attitude is an explicit
 description of the client's risk willingness. A tradeoff is a stated willingness to accept
 uncertainty/loss for return, or forgo upside for stability. A voluntary, directional action

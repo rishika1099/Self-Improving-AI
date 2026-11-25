@@ -2,7 +2,8 @@ import React from 'react';
 
 const hypotheses = [['conservative','保守'],['balanced','均衡'],['growth','较高风险']];
 const criteria = {declared_attitude:'顾问明确描述客户的风险意愿',risk_return_tradeoff:'客户说明了收益与风险之间的取舍',
-  observed_risk_choice:'客户主动选择承担或减少风险',no_direction:'未给出风险方向'};
+  observed_risk_choice:'客户主动选择承担或减少风险',directed_inquiry:'顾问主动探索具有方向的方案',
+  stock_target_inquiry:'顾问原话中的目标与实际试算相符',no_direction:'未给出风险方向'};
 const strengths = {explicit:'明确声明',medium:'中等信号',weak:'弱信号',strong:'强信号'};
 
 export function scopeName(scope) {
@@ -19,10 +20,10 @@ function evidenceDescription(row) {
   return row.rule;
 }
 
-export function RiskScore({scores, visibleEvents}) {
+export function RiskScore({scores, visibleEvents,title='客户风险意愿分'}) {
   if (!scores?.length) return null;
-  return <section className="risk-score" aria-label="客户风险意愿分">
-    <h4>客户风险意愿分</h4>
+  return <section className="risk-score" aria-label={title}>
+    <h4>{title}</h4>
     {scores.map(card=><div key={JSON.stringify(card.scope)}>
       <p><strong>{scopeName(card.scope)} · {card.score == null
         ? (card.status==='conflict'?'证据有分歧，等待核对':'证据不足，暂不出分')
@@ -38,7 +39,7 @@ export function RiskScore({scores, visibleEvents}) {
           <strong>{evidenceDescription(row)}</strong> · {strengths[row.strength] || row.strength}<br/>
           {criteria[row.criterion] || (row.legacy_text?'旧版语义分类，缺少判据字段':'试算目标与当时股票敞口比较')}
           {row.interpretation && <span> · 模型解读「{row.interpretation}」</span>}<br/>
-          三项系数 {row.multipliers.join(' / ')} → 累计 {row.running_score.toFixed(1)} 分
+          三项系数 {row.multipliers.map(v=>Number(v.toFixed(4))).join(' / ')} → 累计 {row.running_score.toFixed(1)} 分
           <span>。仅去掉这一组系数，其余计分依据固定时为 {row.score_without_this_factor?.toFixed(1) ?? '暂无分数'}。</span>
           <small> · 来源 {visibleEvents?.has(row.event_id)
             ? <a href={'#learning-event-'+encodeURIComponent(row.event_id)}>查看原始记录</a> : row.event_id}（修订 {row.revision}）</small>

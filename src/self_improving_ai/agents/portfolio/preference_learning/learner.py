@@ -38,7 +38,7 @@ def normalize_log_support(logs):
 def _belief(dim, selected, rules, declared, conflicts):
     labels = DIMENSIONS[dim]
     priors = rules["priors"][dim]
-    contributions = [rules["rules"][s["rule_id"]]["multipliers"] for s in selected]
+    contributions = [evidence_multipliers(s, rules) for s in selected]
     if contributions:
         logs = [math.fsum([math.log(p)] + [math.log(c[i]) for c in contributions])
                 for i, p in enumerate(priors)]
@@ -53,6 +53,12 @@ def _belief(dim, selected, rules, declared, conflicts):
                             "tentative" if selected else "unknown"),
         "active_signal_ids": [s["signal_id"] for s in selected],
     }
+
+
+def evidence_multipliers(signal, rules):
+    base = rules["rules"][signal["rule_id"]]["multipliers"]
+    scale = signal.get("basis", {}).get("exposure_scale", 1)
+    return [value ** scale for value in base]
 
 
 def rebuild_state(initial_profile, evidence_history, rules):

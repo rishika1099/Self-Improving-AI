@@ -1,7 +1,7 @@
 """Build a read-only context without turning inferred preferences into tool parameters."""
 from __future__ import annotations
 import math
-from .learner import load_rules, normalize_log_support, risk_preference_index
+from .learner import evidence_multipliers, load_rules, normalize_log_support, risk_preference_index
 from .schemas import DIMENSIONS, normalize_scope, timestamp
 
 
@@ -22,7 +22,7 @@ def risk_score(view, state, rules, conflicts):
     for signal in state["active_evidence"]:
         if signal["signal_id"] not in ids:
             continue
-        factors = rules["rules"][signal["rule_id"]]["multipliers"]
+        factors = evidence_multipliers(signal, rules)
         logs = [v + math.log(factor) for v, factor in zip(logs, factors)]
         probs = dict(zip(labels, normalize_log_support(logs)))
         ledger.append({"event_id": signal["source_event_id"], "revision": signal["source_revision"],

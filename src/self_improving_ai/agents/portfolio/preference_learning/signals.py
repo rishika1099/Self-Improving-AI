@@ -1,7 +1,9 @@
 """Convert validated events and exact text excerpts to versioned signals."""
 from __future__ import annotations
 import json
-from .prompts import PROMPT_VERSION
+import re
+import unicodedata
+from .prompts import CLAUSE_INDEX_VERSIONS, PROMPT_VERSION
 from .parser import ParseError, ParsePacket, numbered_excerpts
 from .schemas import DIMENSIONS, canonical, event_scope, issue, normalize_scope, validate_event
 
@@ -61,7 +63,25 @@ def extract_signals(event, parse_text=None):
                     result = result["signals"]
                 if not isinstance(result, list) or len(result) > 20:
                     raise ValueError("Parser must return a list of up to 20 semantic signals.")
-                items = [_validate_text(item, event) for item in result]
+                rejected = []
+                for raw_item in result:
+                    try:
+                        items.append(_validate_text(raw_item, event, parser.get("prompt_version")))
+                    except (ValueError, TypeError, KeyError, ParseError) as exc:
+                        rejected.append(exc)
+                if rejected and not items:
+                    raise rejected[0]
+                if rejected:
+                    issues.append(issue("incomplete_coverage", "Some interpretations could not be bound to the source. Review the original request."))
+                if parser.get("prompt_version") in CLAUSE_INDEX_VERSIONS:
+                    spans = numbered_excerpts(event["user_text"], independent_clauses=True)
+                    covered = {item["evidence_text"] for item in items}
+                    if len(spans) > 1:
+                        for span in spans:
+                            if span not in covered:
+                                make("REVIEW", "attention", "uninterpreted_excerpt", "none", "attention_only",
+                                     span, "No interpretation returned for this segment.", evidence_text=span)
+                                issues.append(issue("incomplete_coverage", "An input segment was saved for review."))
             except ParseError as exc:
                 status = "needs_review" if exc.code == "scope_unresolved" else "pending"
                 detail = issue(exc.code, str(exc))
@@ -85,7 +105,9 @@ def extract_signals(event, parse_text=None):
     if target is None:
         target = requested.get("target_stock_weight")
     source = event["parameter_sources"].get("target_stock_weight", "unknown")
-    if not failed and event["task"] in {"allocation", "allocation_drift"} and target is not None:
+    allocation_trial = event["task"] in {"allocation", "allocation_drift"} or (
+        event["task"] == "risk" and source == "manual" and "target_stock_weight" in requested)
+    if not failed and allocation_trial and target is not None:
         make("ATTENTION", "attention", "query_interest", "none", "attention_only", target,
              "An allocation scenario was explored; adoption is not established.",
              target_stock_weight=target, parameter_source=source, adoption_status="not_established",
@@ -105,7 +127,8 @@ def extract_signals(event, parse_text=None):
                  "Compared the explored target to current equity exposure, not to an approved allocation.",
                  basis={"current_stock_weight":current, "target_stock_weight":target,
                         "previous_scenario_stock_weight":event["prior_context"].get("previous_scenario_stock_weight"),
-                        "parameter_source":source})
+                        "parameter_source":source,
+                        "exposure_scale":exposure_scale(event, current, target) if source == "manual" else 1})
     if event["entry_point"] == "direct" and event["outcome"] == "success" and event["task"] in TASK_TOPICS:
         task = event["task"]
         basis = {"task": task, **event.get("result_summary", {})}
@@ -123,15 +146,50 @@ def extract_signals(event, parse_text=None):
                  f"Request concerned {key}; no purchase intent or risk preference inferred.",
                  basis={key:value}, adoption_status="not_established")
 
+    retained_topics = {(i.get("value"), i["evidence_text"], canonical(i.get("scope"))) for i in items
+                       if i["kind"] == "client_cue" and i["assertion"] == "affirmed"}
     for item in items:
         kind, dim, value, assertion = (item[k] for k in ("kind","dimension","value","assertion"))
         scope, evidence = item["scope"], item["evidence_text"]
         extra = dict(scope=scope, evidence_text=evidence, assertion=assertion)
+        if event["entry_point"] == "agent" and event.get("text_source") == "default":
+            make("ATTENTION", "attention", "query_interest", "none", "attention_only", evidence,
+                 "System-supplied question.", **extra)
+            continue
+        topic = item.get("client_topic")
+        topic_key = (topic, evidence, canonical(scope))
+        if (assertion == "affirmed" and topic in CUE_TOPICS - {"other"} and topic_key not in retained_topics):
+            retained_topics.add(topic_key)
+            make("CUE", "attention", "client_cue", "weak", "attention_only", topic, item["reason"], **extra)
+        inquiry_direction = {"lower":"conservative","higher":"growth","balanced":"balanced"}.get(item.get("risk_direction"))
+        if (item.get("risk_basis") == "directed_inquiry" and assertion == "affirmed"
+                and event["entry_point"] == "agent" and dim == "attention" and inquiry_direction
+                and topic in {"other","risk_change"}):
+            make("HINT","risk_tilt","behavioral_hint","weak","hint_"+inquiry_direction,inquiry_direction,
+                 item["reason"],**extra,risk_basis="directed_inquiry",semantic_reason=item["reason"])
+        if (item.get("risk_basis") == "stock_target_inquiry" and kind == "attention" and
+                assertion == "affirmed" and event["entry_point"] == "agent" and event["outcome"] == "success"):
+            trial = verified_chat_target(event, item)
+            if trial:
+                current, target = trial
+                lower = target < current
+                make("TRIAL", "risk_tilt", "allocation_exploration", "medium",
+                     "manual_lower_equity" if lower else "manual_raise_equity",
+                     "conservative" if lower else "growth", item["reason"], **extra,
+                     risk_basis="stock_target_inquiry", semantic_reason=item["reason"],
+                     basis={"current_stock_weight": current, "target_stock_weight": target,
+                            "parameter_source": "manual", "exposure_scale": exposure_scale(event, current, target)})
         if dim == "risk_tilt":
             basis = item.get("risk_basis")
             extra.update(risk_basis=basis, semantic_reason=item["reason"], prompt_version=parser.get("prompt_version"))
+            if (basis == "directed_inquiry" and assertion == "affirmed" and item.get("risk_direction") is not None
+                    and inquiry_direction != value):
+                make("REVIEW","attention","uninterpreted_excerpt","none","attention_only",evidence,
+                     "Direction fields disagree.",**extra)
+                issues.append(issue("incomplete_coverage","Risk direction requires review."))
+                continue
             if (parser.get("prompt_version") == PROMPT_VERSION or basis is not None) and assertion == "affirmed":
-                if basis == "observed_risk_choice":
+                if basis in {"observed_risk_choice", "directed_inquiry"}:
                     kind = "behavioral_hint"
                 elif basis not in {"declared_attitude", "risk_return_tradeoff"}:
                     make("ATTENTION", "attention", "unscored_observation", "none", "attention_only",
@@ -170,15 +228,79 @@ def extract_signals(event, parse_text=None):
     return {"event": event, "status": status, "signals": signals, "issues": issues, "parser": parser}
 
 
-def _validate_text(raw, event):
+def exposure_scale(event, current, target):
+    if event.get("operation_scoring") == "equity-distance-v1":
+        return min(1.5, abs(target - current) / .20)
+    return 1
+
+
+def mentioned_percentages(excerpt):
+    text = unicodedata.normalize("NFKC", excerpt).lower()
+    number = r"(?<![\d.])(\d+(?:\.\d+)?)"
+    amounts = {float(n) for n in re.findall(number + r"\s*(?:%|per\s*cent\b|percent\b)", text)}
+    for ratio in re.finditer(number + r"\s*[/：:]\s*(\d+(?:\.\d+)?)", text):
+        a, b = map(float, ratio.groups())
+        if abs(a+b-100) < 1e-9:
+            prefix = text[max(0, ratio.start()-28):ratio.start()]
+            suffix = text[ratio.end():ratio.end()+20]
+            bonds_first = re.search(r"(?:债券?\s*[/比与和]?\s*股|bonds?\s*[/:-]\s*(?:stocks?|equity))", prefix+" "+suffix)
+            amounts.add(b if bonds_first else a)
+    digits = {ch: n for n, ch in enumerate("零一二三四五六七八九")}
+    digits["两"] = 2
+    for whole, tenths in re.findall(r"([一二两三四五六七八九十0-9])成([一二三四五六七八九0-9]?)", text):
+        numeral = lambda c: int(c) if c.isascii() else digits.get(c, 10)
+        amounts.add(10*numeral(whole) + (numeral(tenths) if tenths else 0))
+    for cn in re.findall(r"百分之([零一二两三四五六七八九十百]+)", text):
+        if cn == "一百":
+            amounts.add(100)
+        elif "十" in cn:
+            tens, _, ones = cn.partition("十")
+            if tens in ("", *digits) and ones in ("", *digits):
+                amounts.add(10*digits.get(tens,1) + digits.get(ones,0))
+        elif cn in digits:
+            amounts.add(digits[cn])
+    return amounts
+
+
+def verified_chat_target(event, item):
+    percent = item.get("stock_target_pct")
+    if type(percent) not in (float, int) or not 0 <= percent <= 100:
+        return None
+    if percent not in mentioned_percentages(item["evidence_text"]):
+        return None
+    target = percent / 100
+    matches = set()
+    for row in event.get("execution_trace", []):
+        if row.get("kind") != "result" or row.get("tool") not in {"calculate_allocation_drift", "estimate_portfolio_risk"}:
+            continue
+        result = row.get("result") or {}
+        if (result.get("status") != "success" or result.get("client_id") != event["client_id"]
+                or (result.get("account_id") or None) != (item.get("scope") or {}).get("account_id")):
+            continue
+        stock = result.get("asset_classes", {}).get("stock", {})
+        comp = result.get("scenario_comparison", {})
+        if stock and result.get("target_source") == "request_override":
+            current, executed = stock.get("current_weight"), stock.get("target_weight")
+        elif comp.get("source") == "manual_scenario":
+            current, executed = result.get("weights", {}).get("stock"), comp.get("weights", {}).get("stock")
+        else:
+            continue
+        if type(current) in (int,float) and type(executed) in (int,float) and abs(executed-target) < 1e-9 and abs(current-target) > 1e-9:
+            matches.add((current, target))
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _validate_text(raw, event, prompt_version=None):
     if not isinstance(raw, dict):
         raise ValueError("Each semantic signal must be an object.")
-    i = {k: raw.get(k) for k in ("kind","dimension","value","assertion","scope","evidence_text","reason","target_event_id","risk_basis")}
+    i = {k: raw.get(k) for k in ("kind","dimension","value","assertion","scope","evidence_text","reason","target_event_id","risk_basis","stock_target_pct","client_topic","risk_direction")}
     kind, dim, val, assertion, evidence = (i[k] for k in ("kind","dimension","value","assertion","evidence_text"))
+    if any(i[key] is not None and not isinstance(i[key], str) for key in ("risk_basis","client_topic","risk_direction")):
+        raise ValueError("The risk basis and client topic must be text.")
     if not all(isinstance(x, str) for x in (kind, dim, assertion)) or kind not in KINDS or assertion not in ASSERTIONS:
         raise ValueError("Unknown semantic kind, dimension or assertion.")
     if "evidence_id" in raw:
-        sentences = numbered_excerpts(event["user_text"])
+        sentences = numbered_excerpts(event["user_text"], independent_clauses=prompt_version in CLAUSE_INDEX_VERSIONS)
         ref = raw["evidence_id"]
         if type(ref) is not int or not 1 <= ref <= len(sentences):
             raise ValueError("Evidence must refer to a supplied sentence.")

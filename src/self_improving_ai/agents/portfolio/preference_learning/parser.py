@@ -19,7 +19,7 @@ EXTRACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_id", "reason", "risk_basis"],
+                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_id", "reason", "risk_basis", "client_topic","risk_direction"],
                 "properties": {
                     "kind": {"type": "string"},
                     "dimension": {"type": "string", "enum": ["risk_tilt", "adjustment_style", "attention", "constraint", "correction"]},
@@ -41,6 +41,10 @@ EXTRACTION_SCHEMA = {
                         },
                     },
                     "risk_basis": {"type": "string"},
+                    "risk_direction": {"type":"string","enum":["lower","higher","balanced","none"]},
+                    "client_topic": {"type":"string","enum":["liquidity","income_goal","capital_preservation",
+                                     "leverage","risk_change","adjustment_pace","other"]},
+                    "stock_target_pct": {"type": "number"},
                     "evidence_id": {"type": "integer"},
                     "reason": {"type": "string"},
                     "target_event_id": {"type": "string"},
@@ -51,9 +55,12 @@ EXTRACTION_SCHEMA = {
 }
 
 
-def numbered_excerpts(text):
+def numbered_excerpts(text, *, independent_clauses=False):
     # Keep decimal numbers and identifiers intact. Spans are literal slices of the input.
-    return [piece.strip() for piece in re.split(r"(?<=[。！？!?])|(?<=\.)\s+|\n+", text) if piece.strip()]
+    boundaries = r"(?<=[。！？!?])|(?<=\.)\s+|\n+"
+    if independent_clauses:
+        boundaries += r"|(?<=[;；])|(?<=[,，])\s*(?=还要|另外|同时|也请|并且|另有|and also\b|also\b|separately\b)"
+    return [piece.strip() for piece in re.split(boundaries, text, flags=re.I) if piece.strip()]
 
 
 class ParseError(Exception):
@@ -121,7 +128,7 @@ class GeminiParser:
         if bindings:
             instruction += "\nCaller-verified scope IDs: " + json.dumps(bindings, ensure_ascii=False)
         parts = [{"text": text}]
-        sentences = numbered_excerpts(text)
+        sentences = numbered_excerpts(text, independent_clauses=True)
         if len(sentences) > 1:
             parts.append({"text": json.dumps(dict(enumerate(sentences, 1)), ensure_ascii=False)})
         payload = {"systemInstruction":{"parts":[{"text":instruction}]},

@@ -64,3 +64,12 @@
 .risk-score li {margin-bottom:8px}
 .risk-comparison table {width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .risk-comparison td,.risk-comparison th {text-align:left;padding:6px 4px;border-bottom:1px solid var(--border)}
+.working-risk,.scenario-check {border:1px solid var(--border);border-radius:10px;margin:14px 0;padding:16px 20px;background:var(--surface);overflow-wrap:anywhere}
+.working-risk {display:grid;grid-template-columns:minmax(175px,1fr) 2fr;gap:20px}
+.working-risk h3,.scenario-check h3 {margin:0 0 6px}
+.working-risk p,.scenario-check p {margin:6px 0;font-size:13px}
+.working-risk strong {font-size:26px;font-variant-numeric:tabular-nums}
+.working-risk meter,.risk-calibration input {width:min(100%,280px);display:block}
+.working-risk meter[hidden] {display:none}
+.working-risk button {margin:6px 6px 0 0;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px}
+@media(max-width:600px){.working-risk{grid-template-columns:1fr;gap:7px}}

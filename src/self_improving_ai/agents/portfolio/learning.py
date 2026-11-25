@@ -18,6 +18,7 @@ from time import monotonic
 from uuid import uuid4
 
 from self_improving_ai.config import settings
+from self_improving_ai.agents.portfolio.analysis_focus import working_index
 from self_improving_ai.tools.portfolio.holdings import _load_households
 
 
@@ -109,6 +110,9 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS requests(
                     client TEXT, event TEXT, intent TEXT, created TEXT, result TEXT,
                     PRIMARY KEY(client,event));
+                CREATE TABLE IF NOT EXISTS risk_calibrations(
+                    client TEXT, revision INTEGER, chosen INTEGER, baseline REAL, created TEXT,
+                    PRIMARY KEY(client,revision));
                 CREATE TABLE IF NOT EXISTS deliveries(
                     seq INTEGER PRIMARY KEY AUTOINCREMENT, client TEXT, event TEXT,
                     revision INTEGER, kind TEXT, payload TEXT, status TEXT DEFAULT 'pending',
@@ -134,6 +138,30 @@ class Journal:
             if row['intent'] != encode(intent):
                 raise ValueError('This event ID already belongs to different input.')
             return dict(row)
+
+    def calibration(self, db, client):
+        row = db.execute("SELECT revision,chosen,baseline,created FROM risk_calibrations WHERE client=? "
+                         "ORDER BY revision DESC LIMIT 1", (client,)).fetchone()
+        return dict(row) if row else {"revision": 0, "chosen": None, "baseline": None}
+
+    def calibrate(self, client, chosen, expected_revision, profile_version):
+        with self.db() as db:
+            sequence = db.execute("SELECT max(seq) FROM deliveries WHERE client=?", (client,)).fetchone()[0]
+        view = self.view(client)
+        context = view.get("context") or {}
+        index = context.get("working_risk_index")
+        if not index or context.get("profile_version") != profile_version:
+            raise ValueError("客户画像已变化或正在更新，请刷新后调整。")
+        baseline = index["reference"] if index["reference"] is not None else 50
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if sequence != db.execute("SELECT max(seq) FROM deliveries WHERE client=?", (client,)).fetchone()[0]:
+                raise ValueError("刚刚有新的客户记录，请按最新评分重新调整。")
+            if self.calibration(db, client)["revision"] != expected_revision:
+                raise ValueError("评分已被调整，请刷新后再试。")
+            db.execute("INSERT INTO risk_calibrations VALUES(?,?,?,?,?)",
+                       (client, expected_revision + 1, chosen, baseline, now()))
+        return {"status": "success", "revision": expected_revision + 1}
 
     @serialized
     def append(self, event):
@@ -181,15 +209,15 @@ class Journal:
             if not latest or withdrawn or latest["kind"] != "event":
                 raise ValueError("Only an active observation can be reinterpreted.")
             event = json.loads(latest["payload"])
-            if event["entry_point"] not in {"advisor_note", "direct"} or event["outcome"] != "success":
+            if event["entry_point"] not in {"advisor_note", "direct", "agent"} or event["outcome"] != "success":
                 raise ValueError("Select a completed calculation or client note.")
             if latest["revision"] != expected_revision or latest["status"] == "pending":
                 return
             event["revision"] += 1
-            if event["task"] == "risk" and "result_summary" not in event:
+            if event["task"] == "risk" and "current_stock_weight" not in event["prior_context"]:
                 row = db.execute("SELECT result FROM requests WHERE client=? AND event=?", key).fetchone()
                 if row and row["result"]:
-                    event["result_summary"] = risk_metrics(json.loads(row["result"]).get("result", {}))
+                    add_risk_execution(event, json.loads(row["result"]).get("result", {}))
             db.execute("INSERT INTO deliveries(client,event,revision,kind,payload) VALUES(?,?,?,'event',?)",
                        (*key, event["revision"], encode(event)))
 
@@ -244,7 +272,8 @@ class Journal:
                     extraction_status = (reply.get('extraction') or {}).get('status')
                     if extraction_status in {'pending','partial'} or status in {'pending','partial'}:
                         delivery_status = 'pending'
-                    elif row['kind'] == 'event' and 'needs_review' in {status, extraction_status}:
+                    elif row['kind'] == 'event' and ('needs_review' in {status, extraction_status}
+                            or any(i.get('code') == 'incomplete_coverage' for i in (reply.get('extraction') or {}).get('issues', []))):
                         delivery_status = 'needs_review'
                     elif status in {'ok','success','already_processed'}:
                         delivery_status = 'applied'
@@ -288,6 +317,26 @@ class Journal:
             context, status = None, 'module_busy'
         except Exception:
             context, status = None, 'module_error'
+        if context is not None:
+            sources = context.get("risk_source_scores", {})
+            cards = sources.get("operations", context.get("risk_preference_scores", []))
+            notes = {encode(c.get("scope")):c for c in sources.get("notes", [])}
+            general = next((c for c in cards if not c.get("scope")), None)
+            if general is not None:
+                with self.db() as db:
+                    adjustment = self.calibration(db, client)
+                context["working_risk_index"] = working_index(general, adjustment, notes.get("null"))
+                # An applicable scoped assessment takes precedence in the analysis only.
+                by_scope = {encode(c["scope"]):c for c in cards}
+                for key, note in notes.items():
+                    by_scope.setdefault(key, {"scope":note["scope"], "status":"insufficient"})
+                specific = [c for k,c in by_scope.items() if c.get("scope") and
+                            (c.get("score") is not None or c.get("status") == "conflict"
+                             or notes.get(k, {}).get("score") is not None)]
+                if specific:
+                    card = max(specific, key=lambda c: len(c["scope"]))
+                    context["scoped_risk_index"] = {**working_index(card, {"chosen": None}, notes.get(encode(card["scope"]))),
+                                                    "scope": card["scope"]}
         # Keep the latest revision and any retraction together. Cutting the last
         # 100 raw rows could otherwise hide a prior retraction and enable it again.
         events={}
@@ -372,13 +421,24 @@ def risk_metrics(result):
     return {key: result[key] for key in fields if type(result.get(key)) in (int, float)}
 
 
+def add_risk_execution(event, result):
+    event["result_summary"] = risk_metrics(result)
+    comparison = result.get("scenario_comparison", {})
+    if result.get("client_id") == event["client_id"] and comparison.get("status") == "success":
+        event["prior_context"]["current_stock_weight"] = result["weights"]["stock"]
+        event["effective_parameters"]["target_stock_weight"] = comparison["weights"]["stock"]
+        if "target_stock_weight" not in event["requested_parameters"]:
+            event["parameter_sources"]["target_stock_weight"] = "default"
+
+
 def record_finish(journal, event, run):
     if journal is None:
         run['learning'] = {'status':'storage_error','event_id':event['event_id']}
         return run
     try:
         event = json.loads(encode(event))
-        event.update(revision=2,outcome=run['status'],result_reference=run['run_id'])
+        event.update(revision=2,outcome=run['status'],result_reference=run['run_id'],
+                     operation_scoring="equity-distance-v1")
         result = run.get('result',{})
         if result.get('client_id') == event['client_id'] and isinstance(result.get('goal'),dict):
             for key in ('target_amount','years','annual_contribution','annual_withdrawal'):
@@ -393,7 +453,7 @@ def record_finish(journal, event, run):
             if 'target_stock_weight' not in event['requested_parameters']:
                 event['parameter_sources']['target_stock_weight'] = 'default'
         if event["task"] == "risk" and run["status"] == "success":
-            event["result_summary"] = risk_metrics(result)
+            add_risk_execution(event, result)
         # Tool calls made by the model are observations of execution, not user choices.
         if event['entry_point'] == 'agent':
             event['execution_trace'] = run.get('trace',[])

@@ -7,6 +7,7 @@ import json
 from google.adk import Agent
 
 from self_improving_ai.agents.portfolio.instructions import PORTFOLIO_INSTRUCTION
+from self_improving_ai.agents.portfolio.analysis_focus import attach_scenarios
 from self_improving_ai.agents.portfolio.model_settings import PortfolioGemini, portfolio_api_key
 from self_improving_ai.config import settings
 from self_improving_ai.agents.portfolio.learning import get_client_learning_context, read_analysis_context
@@ -61,12 +62,18 @@ def create_portfolio_agent(model=None, *, client_id=None, learning_context=None,
         if account_id and tool.name == "project_financial_goal":
             return {"status": "error", "error": {"code": "ACCOUNT_PROJECTION_UNSUPPORTED",
                                                  "message": "Goal projection requires a household scenario."}}
+    def supplement(tool, args, tool_context, tool_response):
+        if client_id and tool.name in {"get_holdings", "calculate_allocation_drift", "estimate_portfolio_risk"}:
+            return attach_scenarios(tool_response, (learning_context or {}).get("context"), client_id,
+                                    args.get("account_id"))
+        return None
     selected_model = model if model is not None else PortfolioGemini(
         model=settings.portfolio_model, api_key=portfolio_api_key())
     return Agent(name="portfolio_estimation_agent", model=selected_model,
                  description="Synthetic portfolio holdings, stock/bond risk, allocation drift, "
                              "goal projections and separate external market-data lookups.",
                  instruction=instruction, tools=PORTFOLIO_TOOLS, before_tool_callback=guard_client,
+                 after_tool_callback=supplement,
                  output_key="portfolio_result")
 
 

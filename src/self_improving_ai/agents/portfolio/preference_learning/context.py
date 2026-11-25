@@ -25,7 +25,12 @@ def build_context(state, scope=None):
                 declared.append({"field":dim, **s})
                 specific.append(s)
             elif view["beliefs"][dim]["active_signal_ids"]:
-                tentative.append({"field":dim,"scope":view_scope, **view["beliefs"][dim]})
+                belief = view["beliefs"][dim]
+                ids = set(belief["active_signal_ids"])
+                sources = [{"event_id": s["source_event_id"], "quote": s.get("evidence_text"),
+                            "value": s["value"], "basis": s.get("basis", {})}
+                           for s in state["active_evidence"] if s["signal_id"] in ids]
+                tentative.append({"field":dim,"scope":view_scope, **belief, "sources":sources})
         if len({s["value"] for s in specific}) > 1:
             conflicts.append({"dimension":dim,"kind":"applicable_scopes_disagree",
                               "evidence_ids":[s["source_event_id"] for s in specific]})
@@ -36,6 +41,13 @@ def build_context(state, scope=None):
                               "field":field,"evidence_ids":[s["signal_id"] for s in rows]})
     recent = [s for seq in state["attention"].values() for s in seq if _applies(s["scope"], scope)]
     recent.sort(key=lambda s:(timestamp(s["occurred_at"]),s["signal_id"]))
+    cues = [s for s in recent if s["kind"] == "client_cue"]
+    # Keep the quoted observation visible even when an explicit declaration anchors
+    # the same dimension. A weaker hint may still prompt a clarifying question.
+    cues.extend(s for s in state["active_evidence"]
+                if s["kind"] == "behavioral_hint" and _applies(s["scope"], scope))
+    cues.sort(key=lambda s: (timestamp(s["occurred_at"]), s["signal_id"]))
+    recent = [s for s in recent if s["kind"] != "client_cue"]
     unknowns = [dim for dim in DIMENSIONS if not any(d["field"] == dim for d in declared + tentative)]
     if not any(s["value"] == "max_loss_limit" for s in constraints):
         unknowns.append("maximum_loss_limit")
@@ -54,7 +66,7 @@ def build_context(state, scope=None):
     summary.append("Unknown: "+", ".join(unknowns)+".")
     return {"client_id":state["client_id"],"profile_version":state["profile_version"],"scope":scope,
             "team_declared":declared,"tentative_preferences":tentative,"recent_attention":recent[-25:],
-            "explicit_constraints":constraints,"conflicts":conflicts,"unknowns":unknowns,
+            "client_cues":cues[-25:], "explicit_constraints":constraints,"conflicts":conflicts,"unknowns":unknowns,
             "usage_notes":["Use context to explain portfolio analysis. Honor the advisor's current inputs.",
                            "An explored allocation does not imply adoption or execution.",
                            "Support scores are uncalibrated. Resolve contradictory or missing information with the advisor."],

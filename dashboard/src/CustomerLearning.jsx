@@ -1,4 +1,5 @@
 import React, {useEffect, useState, useRef} from 'react';
+import {describeEvidence, EventImpact} from './PreferenceEvidence';
 import {requestJson} from './connectionRequest';
 
 const labels={waiting_for_module:'操作已记录，等待学习模块',connected:'学习模块已连接',processing_pending:'有操作等待处理，暂不使用旧画像',module_error:'学习模块暂不可用，操作仍保留',module_busy:'学习模块仍在处理，请稍后刷新或重试'};
@@ -16,9 +17,22 @@ export default function CustomerLearning({client,clientName,group,refresh,disabl
   useEffect(()=>{
     const controller=new AbortController();
     setView(null);setError('');
-    requestJson(base,{signal:controller.signal}).then(setView).catch(e=>{if(!controller.signal.aborted)setError(e.message);});
-    return ()=>controller.abort();
-  },[base,refresh,version]);
+    let timer;
+    async function read(attempt) {
+      try {
+        const next = await requestJson(base,{signal:controller.signal,headers:{"X-Portfolio-Analysis":group}});
+        if (controller.signal.aborted) return;
+        setView(next);
+        const processing = next.status === 'module_busy' || (next.status === 'processing_pending' &&
+          next.events?.some(r=>r.delivery_status==='pending' && !r.update));
+        if (processing && attempt < 12) timer = setTimeout(()=>read(attempt+1), 2200);
+      } catch(e) {
+        if (!controller.signal.aborted) {setView(null);setError(e.message);}
+      }
+    }
+    read(0);
+    return ()=>{clearTimeout(timer);controller.abort();};
+  },[base,group,refresh,version]);
   async function action(path,body) {
     setBusy(true);setError('');
     try {
@@ -46,10 +60,6 @@ export default function CustomerLearning({client,clientName,group,refresh,disabl
     .flatMap(row => row.update?.issues || [])
     .find(issue => issue.retry_at && ['model_rate_limited', 'model_busy'].includes(issue.code));
   const context=view?.context;
-  const names={risk_tilt:'风险倾向',adjustment_style:'调整方式',maximum_loss_limit:'最大损失限制',adopted_target_allocation:'已接受的目标配置',conservative:'保守',balanced:'均衡',growth:'较高风险暴露',gradual:'分阶段调整',flexible:'可接受一次较大调整'};
-  const printable=x=>typeof x==='string'||typeof x==='number'?String(x):JSON.stringify(x??'暂未确定');
-  const label=x=>typeof x==='string'&&Object.hasOwn(names,x)?names[x]:printable(x);
-  const describe=x=>typeof x==='string'?label(x):typeof x?.target_stock_weight==='number'?`研究过股票 ${(x.target_stock_weight*100).toFixed(0)}% 的情景`:x?.field?`${label(x.field)}：${label(x.value)}`:printable(x?.summary||x?.reason||'详情见来源记录');
   return <section className="customer-learning" aria-label="客户偏好学习">
     <h3>客户偏好学习</h3>
     <p role="status">{view ? labels[view.status]||view.status : error?'客户记录读取失败，请重试':'正在读取客户记录…'}</p>
@@ -65,14 +75,18 @@ export default function CustomerLearning({client,clientName,group,refresh,disabl
       <button disabled={busy} onClick={exportRecords}>导出当前客户记录</button>
     </div>
     {error&&<p role="alert">{error}</p>}
-    {context ? <><h4>供后续分析使用的客户信息</h4><p>{context.summary||'学习模块已返回客户信息。'}</p><p>暂定支持程度不等于已校准的风险评分。</p>{[['team_declared','团队明确说明'],['tentative_preferences','暂定倾向'],['recent_attention','近期关注'],['unknowns','尚不明确'],['usage_notes','本次使用说明']].map(([key,title])=><div key={key}><strong>{title}</strong>{Array.isArray(context[key])&&context[key].length?<ul>{context[key].map((x,i)=><li key={i}>{describe(x)}{x?.source_event_id?`（依据 ${x.source_event_id}）`:''}</li>)}</ul>:<p>暂无返回记录</p>}</div>)}<details><summary>查看完整客户信息和来源</summary><pre>{JSON.stringify(context,null,2)}</pre></details></>:
+    {context ? <><h4>供后续分析使用的客户信息</h4><p>{context.summary||'学习模块已返回客户信息。'}</p><p>暂定支持程度不等于已校准的风险评分。</p>{[['team_declared','团队明确说明'],['tentative_preferences','暂定倾向'],['client_cues','客户需求与待核实线索'],['explicit_constraints','明确约束'],['recent_attention','近期关注'],['unknowns','尚不明确'],['usage_notes','本次使用说明']].map(([key,title])=><div key={key}><strong>{title}</strong>{Array.isArray(context[key])&&context[key].length?<ul>{context[key].map((x,i)=><li key={i}>{describeEvidence(x)}{x?.source_event_id?`（依据 ${x.source_event_id}）`:''}</li>)}</ul>:<p>暂无返回记录</p>}</div>)}<details><summary>查看完整客户信息和来源</summary><pre>{JSON.stringify(context,null,2)}</pre></details></>:
       <p>暂时没有可供后续分析使用的客户信息。模块接入并处理记录后，这里会显示返回的信息。</p>}
     <h4>最近操作与学习结果</h4>
     {view&&!latest.size&&<p>还没有操作。可以先运行一次计算，或补充一条客户说明。</p>}
     {[...latest.values()].reverse().map(row=><article key={row.event_id} className="learning-event">
       <strong>{row.event.user_text||({allocation_drift:'配置偏离试算',risk:'风险指标计算',projection:'目标预测',holdings:'持仓查询',quote:'外部报价查询',history:'历史价格查询'}[row.event.task]||row.event.task)}</strong>
       <p>{new Date(row.event.occurred_at).toLocaleString()} · {deliveryLabels[row.delivery_status] || deliveryLabels.pending}{retracts.has(row.event_id)?` · ${retracts.get(row.event_id).delivery_status==='applied'?'已撤回':'撤回待处理'}`:''}</p>
+      <EventImpact row={row} withdrawn={retracts.has(row.event_id)}/>
       <details><summary>查看输入来源和变化依据</summary><pre>{JSON.stringify({input:row.event,learning_result:row.update},null,2)}</pre></details>
+      {row.event.outcome==='success' && ['advisor_note','direct'].includes(row.event.entry_point)
+        && row.delivery_status!=='pending' && !retracts.has(row.event_id) &&
+        <button disabled={busy||disabled} onClick={()=>action('/reinterpret/'+encodeURIComponent(row.event_id),{revision:row.revision})}>重新解读这条记录</button>}
       <button disabled={busy||disabled||retracts.has(row.event_id)} onClick={()=>action(`/retract/${encodeURIComponent(row.event_id)}`)}>撤回这条记录</button>
     </article>)}
     {view?.total_events>100&&<p>这里只显示最近 100 次操作及其撤回状态，导出包含完整修订历史。</p>}

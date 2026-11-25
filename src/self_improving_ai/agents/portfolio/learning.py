@@ -170,6 +170,29 @@ class Journal:
             db.execute('INSERT OR IGNORE INTO deliveries(client,event,revision,kind,payload) VALUES(?,?,0,?,?)',
                        (client,event,'retract',encode({'client_id':client,'event_id':event})))
 
+    @serialized
+    def reinterpret(self, client, event_id, expected_revision):
+        # Append a revision of the same observation. Repeated clicks reuse that revision.
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            key = (client, event_id)
+            latest = db.execute("SELECT * FROM deliveries WHERE client=? AND event=? ORDER BY seq DESC LIMIT 1", key).fetchone()
+            withdrawn = db.execute("SELECT 1 FROM deliveries WHERE client=? AND event=? AND kind='retract'", key).fetchone()
+            if not latest or withdrawn or latest["kind"] != "event":
+                raise ValueError("Only an active observation can be reinterpreted.")
+            event = json.loads(latest["payload"])
+            if event["entry_point"] not in {"advisor_note", "direct"} or event["outcome"] != "success":
+                raise ValueError("Select a completed calculation or client note.")
+            if latest["revision"] != expected_revision or latest["status"] == "pending":
+                return
+            event["revision"] += 1
+            if event["task"] == "risk" and "result_summary" not in event:
+                row = db.execute("SELECT result FROM requests WHERE client=? AND event=?", key).fetchone()
+                if row and row["result"]:
+                    event["result_summary"] = risk_metrics(json.loads(row["result"]).get("result", {}))
+            db.execute("INSERT INTO deliveries(client,event,revision,kind,payload) VALUES(?,?,?,'event',?)",
+                       (*key, event["revision"], encode(event)))
+
     def rows(self, client):
         with self.db() as db:
             return [dict(r) for r in db.execute('SELECT * FROM deliveries WHERE client=? ORDER BY seq',(client,))]
@@ -288,10 +311,21 @@ class Journal:
 
 def get_client_learning_context(client_id: str, account_id: str | None = None) -> dict:
     """Read a known client's learned context. Never creates evidence from model output."""
+    return read_analysis_context(client_id, account_id)
+
+
+def analysis_scope(account_id=None, group=None):
+    scope = {"account_id": account_id} if account_id else {}
+    if group:
+        scope.update(applicability="current", analysis_id=group)
+    return scope or None
+
+
+def read_analysis_context(client_id, account_id=None, group=None):
     if not valid_client(client_id):
         return {'status':'unknown_client','client_id':client_id,'context':None}
     try:
-        view = Journal().view(client_id, {'account_id': account_id} if account_id else None)
+        view = Journal().view(client_id, analysis_scope(account_id, group))
         return {key:view[key] for key in ('client_id','status','pending_count','context')}
     except Exception:
         return {'status':'storage_error','client_id':client_id,'context':None}
@@ -333,6 +367,11 @@ def record_start(event):
         return None, None
 
 
+def risk_metrics(result):
+    fields = ("annual_volatility", "annual_expected_return")
+    return {key: result[key] for key in fields if type(result.get(key)) in (int, float)}
+
+
 def record_finish(journal, event, run):
     if journal is None:
         run['learning'] = {'status':'storage_error','event_id':event['event_id']}
@@ -353,6 +392,8 @@ def record_finish(journal, event, run):
             event['effective_parameters'] = {**event['effective_parameters'],'target_stock_weight':stock['target_weight']}
             if 'target_stock_weight' not in event['requested_parameters']:
                 event['parameter_sources']['target_stock_weight'] = 'default'
+        if event["task"] == "risk" and run["status"] == "success":
+            event["result_summary"] = risk_metrics(result)
         # Tool calls made by the model are observations of execution, not user choices.
         if event['entry_point'] == 'agent':
             event['execution_trace'] = run.get('trace',[])

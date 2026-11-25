@@ -1,13 +1,13 @@
 """Component A endpoints; explicit calculations and model-driven requests are separate."""
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from self_improving_ai.agents.portfolio.service import execute_task, run_portfolio_agent
 from self_improving_ai.agents.portfolio.application import calculate_for_client, analyze_for_client, save_client_note, require_client
-from self_improving_ai.agents.portfolio.learning import Journal
+from self_improving_ai.agents.portfolio.learning import Journal, analysis_scope
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
@@ -104,10 +104,10 @@ async def ask_agent(request: AgentRequest):
 
 
 @router.get('/learning/{client_id}')
-def learning_view(client_id: str):
+def learning_view(client_id: str, x_portfolio_analysis: str | None = Header(default=None, max_length=100)):
     try:
         require_client(client_id)
-        return Journal().view(client_id)
+        return Journal().view(client_id, analysis_scope(group=x_portfolio_analysis))
     except ValueError as exc:
         raise HTTPException(404,str(exc)) from exc
     except Exception as exc:
@@ -136,6 +136,21 @@ def learning_retry(client_id: str):
         raise HTTPException(404,str(exc)) from exc
     except Exception as exc:
         raise HTTPException(503,'Customer learning storage is unavailable.') from exc
+
+
+class ReinterpretRequest(BaseModel):
+    revision: int = Field(ge=1)
+
+
+@router.post('/learning/{client_id}/reinterpret/{event_id}')
+def reinterpret_record(client_id: str, event_id: str, request: ReinterpretRequest):
+    try:
+        require_client(client_id)
+        journal = Journal()
+        journal.reinterpret(client_id, event_id, request.revision)
+        return {"status": journal.sync(client_id)}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post('/learning/{client_id}/retract/{event_id}')

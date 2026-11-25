@@ -19,11 +19,16 @@ EXTRACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_text", "reason"],
+                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_id", "reason"],
                 "properties": {
                     "kind": {"type": "string"},
-                    "dimension": {"type": "string"},
-                    "value": {"type": ["string", "null"]},
+                    "dimension": {"type": "string", "enum": ["risk_tilt", "adjustment_style", "attention", "constraint", "correction"]},
+                    "value": {"type": "string", "enum": [
+                        "conservative", "balanced", "growth", "gradual", "flexible",
+                        "liquidity", "income_goal", "capital_preservation", "leverage",
+                        "risk_change", "adjustment_pace", "max_loss_limit", "budget",
+                        "restricted_funds", "other",
+                    ]},
                     "assertion": {"type": "string"},
                     "scope": {
                         "type": ["object", "null"],
@@ -31,11 +36,11 @@ EXTRACTION_SCHEMA = {
                         "properties": {
                             "account_id": {"type": "string"},
                             "goal_id": {"type": "string"},
-                            "applicability": {"type": "string", "enum": ["ongoing", "current"]},
+                            "applicability": {"type": "string", "enum": ["ongoing", "this_analysis_only"]},
                             "unresolved": {"type": "boolean"},
                         },
                     },
-                    "evidence_text": {"type": "string"},
+                    "evidence_id": {"type": "integer"},
                     "reason": {"type": "string"},
                     "target_event_id": {"type": "string"},
                 },
@@ -43,6 +48,11 @@ EXTRACTION_SCHEMA = {
         },
     },
 }
+
+
+def numbered_excerpts(text):
+    # Keep decimal numbers and identifiers intact. Spans are literal slices of the input.
+    return [piece.strip() for piece in re.split(r"(?<=[。！？!?])|(?<=\.)\s+|\n+", text) if piece.strip()]
 
 
 class ParseError(Exception):
@@ -109,8 +119,12 @@ class GeminiParser:
         instruction = SYSTEM_PROMPT
         if bindings:
             instruction += "\nCaller-verified scope IDs: " + json.dumps(bindings, ensure_ascii=False)
+        parts = [{"text": text}]
+        sentences = numbered_excerpts(text)
+        if len(sentences) > 1:
+            parts.append({"text": json.dumps(dict(enumerate(sentences, 1)), ensure_ascii=False)})
         payload = {"systemInstruction":{"parts":[{"text":instruction}]},
-                   "contents":[{"role":"user","parts":[{"text":text}]}],
+                   "contents":[{"role":"user","parts":parts}],
                    "generationConfig":{"responseMimeType":"application/json",
                                        "responseJsonSchema":EXTRACTION_SCHEMA,"maxOutputTokens":2048}}
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"

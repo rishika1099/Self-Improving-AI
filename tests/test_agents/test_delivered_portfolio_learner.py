@@ -204,7 +204,7 @@ def test_verified_account_reaches_provider_and_unknown_scope_is_reviewable(api, 
         payload = json.loads(request.data)
         schema = payload["generationConfig"]["responseJsonSchema"]
         scope_schema = schema["properties"]["signals"]["items"]["properties"]["scope"]
-        assert scope_schema["properties"]["applicability"]["enum"] == ["ongoing", "current"]
+        assert scope_schema["properties"]["applicability"]["enum"] == ["ongoing", "this_analysis_only"]
         assert scope_schema["additionalProperties"] is False
         instructions = payload["systemInstruction"]["parts"][0]["text"]
         scope = {"account_id": "ACC-001A"} if '"account_id": "ACC-001A"' in instructions else {"unresolved": True}
@@ -349,3 +349,54 @@ def test_many_independent_default_trials_have_bounded_support(tmp_path):
     assert len(risk["active_signal_ids"]) == 6
     assert len([i for i in result["ignored"] if i["reason_code"] == "default_evidence_limit"]) == 25
     assert len(result["state"]["attention"]["allocation_scenarios"]) == 30
+
+
+def test_cues_reinterpretation_and_risk_result_use(api, monkeypatch):
+    text = "We need cash before the next tuition payment."
+    note(api, text, "tuition-note")
+    first = api.get(API).json()["context"]
+    assert first["client_cues"] == []
+    extracted = signal(text, kind="client_cue", dimension="attention", value="liquidity")
+    extracted.pop("evidence_text")
+    extracted["evidence_id"] = 1
+    monkeypatch.setattr("self_improving_ai.agents.portfolio.preference_learning.adapter.PortfolioParser.parse_scoped",
+                        lambda self, message, scope: [extracted])
+    for _ in range(2):
+        api.post(f"{API}/reinterpret/tuition-note", json={"revision": 2}).raise_for_status()
+    view = api.get(API).json()
+    assert len(view["context"]["client_cues"]) == 1
+    assert view["context"]["team_declared"] == view["context"]["tentative_preferences"] == []
+    assert view["events"][0]["revision"] == 3
+    assert api.get("/api/portfolio/learning/CLI-002").json()["context"]["client_cues"] == []
+    run = api.post("/api/portfolio/execute", json={"task":"risk","client_id":CLIENT}).json()
+    assert run["learning_context_used"]["context"]["client_cues"][0]["evidence_text"] == text
+    attention = api.get(API).json()["context"]["recent_attention"]
+    risk = next(x for x in attention if x["kind"] == "calculation_topic")
+    assert risk["basis"]["annual_volatility"] == run["result"]["annual_volatility"]
+    assert api.post(f"{API}/retract/tuition-note").json()["context"]["client_cues"] == []
+    assert api.post(f"{API}/reinterpret/tuition-note",json={"revision":3}).status_code == 409
+
+
+def test_weak_behavior_in_round_is_tentative_and_retractable(api, monkeypatch):
+    text = "They have been trying smaller steps this time."
+    hint = signal(text,kind="behavioral_hint",dimension="adjustment_style",value="gradual",
+                  scope={"applicability":"current"})
+    monkeypatch.setattr("self_improving_ai.agents.portfolio.preference_learning.adapter.PortfolioParser.parse_scoped",
+                        lambda self, message, scope: [hint])
+    api.post(f"{API}/notes",json={"message":text,"observation":{"event_id":"pace","evidence_group_id":"round-a"}}).raise_for_status()
+    headers={"X-Portfolio-Analysis":"round-a"}
+    view=api.get(API,headers=headers).json()["context"]
+    assert view["team_declared"] == []
+    belief=view["tentative_preferences"][0]
+    assert .5 < belief["probabilities"]["gradual"] < .6
+    assert belief["sources"][0]["quote"] == text
+    assert api.get(API,headers={"X-Portfolio-Analysis":"round-b"}).json()["context"]["tentative_preferences"] == []
+    api.post(f"{API}/retract/pace").raise_for_status()
+    assert api.get(API,headers=headers).json()["context"]["tentative_preferences"] == []
+
+
+def test_invalid_source_reference_cannot_be_used():
+    event=learning.event_from(CLIENT,"client_statement",{},{},STATEMENT,"advisor_note")
+    invalid={**signal(STATEMENT),"evidence_id":99}
+    result=extract_signals(event, lambda _: [invalid])
+    assert result["status"] == "partial" and result["signals"] == []

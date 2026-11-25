@@ -1,5 +1,5 @@
 {
-  "rule_version": "portfolio-preference-v0.1",
+  "rule_version": "portfolio-preference-v0.2",
   "max_default_groups_per_scope": 5,
   "hypotheses": {
     "risk_tilt": [
@@ -129,6 +129,49 @@
         3
       ],
       "condition": "Reasoned choice; current analysis only."
+    },
+    "hint_conservative": {
+      "dimension": "risk_tilt",
+      "multipliers": [
+        1.15,
+        1.0,
+        1.0
+      ],
+      "condition": "Quoted directional client behaviour; tentative evidence only."
+    },
+    "hint_balanced": {
+      "dimension": "risk_tilt",
+      "multipliers": [
+        1.0,
+        1.15,
+        1.0
+      ],
+      "condition": "Quoted directional client behaviour; tentative evidence only."
+    },
+    "hint_growth": {
+      "dimension": "risk_tilt",
+      "multipliers": [
+        1.0,
+        1.0,
+        1.15
+      ],
+      "condition": "Quoted directional client behaviour; tentative evidence only."
+    },
+    "hint_gradual": {
+      "dimension": "adjustment_style",
+      "multipliers": [
+        1.15,
+        1.0
+      ],
+      "condition": "Quoted directional client behaviour; tentative evidence only."
+    },
+    "hint_flexible": {
+      "dimension": "adjustment_style",
+      "multipliers": [
+        1.0,
+        1.15
+      ],
+      "condition": "Quoted directional client behaviour; tentative evidence only."
     }
   }
 }

@@ -37,6 +37,14 @@ class PortfolioLearner:
                 db.execute(sql)
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('rules_sha256',?)", (signature,))
             actual = db.execute("SELECT value FROM metadata WHERE key='rules_sha256'").fetchone()[0]
+            if actual != signature and self.rules["rule_version"] == "portfolio-preference-v0.2":
+                # Upgrade only when removing the new hint rules reproduces the exact old rules.
+                legacy = deepcopy(self.rules)
+                legacy["rule_version"] = "portfolio-preference-v0.1"
+                legacy["rules"] = {k: v for k, v in legacy["rules"].items() if not k.startswith("hint_")}
+                if actual == hashlib.sha256(canonical(legacy).encode()).hexdigest():
+                    db.execute("UPDATE metadata SET value=? WHERE key='rules_sha256'", (signature,))
+                    actual = signature
             if actual != signature:
                 raise ValueError("This database uses different rules. Replay exports explicitly into a new workspace.")
 

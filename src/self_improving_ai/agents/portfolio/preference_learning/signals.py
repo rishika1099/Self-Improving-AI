@@ -1,10 +1,14 @@
 """Convert validated events and exact text excerpts to versioned signals."""
 from __future__ import annotations
 import json
-from .parser import ParseError, ParsePacket
+from .parser import ParseError, ParsePacket, numbered_excerpts
 from .schemas import DIMENSIONS, canonical, event_scope, issue, normalize_scope, validate_event
 
-KINDS = {"explicit_statement", "reasoned_choice", "attention", "constraint", "correction", "preference_change"}
+CUE_TOPICS = {"liquidity", "income_goal", "capital_preservation", "leverage", "risk_change", "adjustment_pace", "other"}
+TASK_TOPICS = {"risk": "risk", "holdings": "holdings", "projection": "projection",
+               "quote": "quote", "history": "history"}
+
+KINDS = {"behavioral_hint", "client_cue", "explicit_statement", "reasoned_choice", "attention", "constraint", "correction", "preference_change"}
 ASSERTIONS = {"affirmed", "hypothetical", "negated", "uncertain"}
 
 
@@ -101,6 +105,16 @@ def extract_signals(event, parse_text=None):
                  basis={"current_stock_weight":current, "target_stock_weight":target,
                         "previous_scenario_stock_weight":event["prior_context"].get("previous_scenario_stock_weight"),
                         "parameter_source":source})
+    if event["entry_point"] == "direct" and event["outcome"] == "success" and event["task"] in TASK_TOPICS:
+        task = event["task"]
+        basis = {"task": task, **event.get("result_summary", {})}
+        if task == "projection":
+            basis["manual_parameters"] = {k: effective[k] for k in effective
+                                          if event["parameter_sources"].get(k) == "manual"}
+        if task in {"quote", "history"}:
+            basis["symbol"] = effective.get("symbol")
+        make("TOPIC", "attention", "calculation_topic", "none", "attention_only", task,
+             "Completed calculation; retain the topic and observed result for follow-up.", basis=basis)
     for key in (() if failed else ("symbol", "ticker", "metric")):
         value = requested.get(key, effective.get(key))
         if isinstance(value, str) and value.strip():
@@ -128,6 +142,10 @@ def extract_signals(event, parse_text=None):
             if kind == "explicit_statement" and assertion == "negated":
                 make("DENIAL", dim, "denial", "none", "attention_only", value,
                      "An explicit denial needs reconciliation with matching declarations.", **extra)
+        elif kind == "behavioral_hint":
+            make("HINT", dim, kind, "weak", "hint_" + value, value, item["reason"], **extra)
+        elif kind == "client_cue":
+            make("CUE", "attention", kind, "weak", "attention_only", value, item["reason"], **extra)
         elif kind == "constraint":
             make("CONSTRAINT", dim, kind, "explicit", "explicit_constraint", value,
                  "Recorded the quoted constraint without inferring a numerical limit.", **extra)
@@ -148,6 +166,12 @@ def _validate_text(raw, event):
     kind, dim, val, assertion, evidence = (i[k] for k in ("kind","dimension","value","assertion","evidence_text"))
     if not all(isinstance(x, str) for x in (kind, dim, assertion)) or kind not in KINDS or assertion not in ASSERTIONS:
         raise ValueError("Unknown semantic kind, dimension or assertion.")
+    if "evidence_id" in raw:
+        sentences = numbered_excerpts(event["user_text"])
+        ref = raw["evidence_id"]
+        if type(ref) is not int or not 1 <= ref <= len(sentences):
+            raise ValueError("Evidence must refer to a supplied sentence.")
+        evidence = i["evidence_text"] = sentences[ref - 1]
     if not isinstance(evidence, str) or not evidence.strip() or evidence not in event["user_text"]:
         raise ValueError("Every semantic signal needs an exact excerpt from the original request.")
     if not isinstance(i["reason"], str) or not i["reason"].strip():
@@ -161,6 +185,8 @@ def _validate_text(raw, event):
             raise ParseError("scope_unresolved", "Bind the named account or goal before applying this input.")
         raw_scope = {k: v for k, v in raw_scope.items() if k != "unresolved"}
         # Normalize the observed legacy Gemini alias without changing identity checks.
+        if raw_scope.get("applicability") == "this_analysis_only":
+            raw_scope["applicability"] = "current"
         if raw_scope.get("applicability") == "long_term":
             raw_scope["applicability"] = "ongoing"
     scope = normalize_scope(raw_scope)
@@ -173,7 +199,7 @@ def _validate_text(raw, event):
     if kind == "reasoned_choice" or merged.get("applicability") == "current":
         merged.update(applicability="current", analysis_id=source_scope.get("analysis_id", event["evidence_group_id"]))
     i["scope"] = merged or None
-    if kind in {"explicit_statement", "preference_change", "reasoned_choice"}:
+    if kind in {"behavioral_hint", "explicit_statement", "preference_change", "reasoned_choice"}:
         if dim not in DIMENSIONS or val not in DIMENSIONS[dim]:
             raise ValueError("Unknown preference dimension or value.")
         if kind == "reasoned_choice" and dim != "adjustment_style":
@@ -181,8 +207,17 @@ def _validate_text(raw, event):
         if kind == "preference_change" and merged.get("applicability") == "current":
             raise ValueError("A current-session choice cannot reset an ongoing preference.")
     elif kind == "constraint":
-        if dim != "constraint" or val not in ("max_loss_limit", "budget", "restricted_funds", "other"):
-            raise ValueError("Unknown constraint field.")
+        if dim != "constraint" or (val is not None and not isinstance(val, str)):
+            raise ValueError("Invalid constraint field.")
+        # The literal instruction is the constraint. A novel topic can safely retain that
+        # instruction as 'other', without populating any inferred numeric or named limit.
+        if val not in {"max_loss_limit", "budget", "restricted_funds", "leverage", "other"}:
+            i["value"] = "other"
+    elif kind == "client_cue":
+        if dim != "attention" or not isinstance(val, str) or not val:
+            raise ValueError("Invalid client observation topic.")
+        if val not in CUE_TOPICS:
+            i["value"] = "other"
     elif kind == "attention":
         if dim != "attention":
             raise ValueError("Attention dimensions must match the kind.")

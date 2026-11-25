@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import ConnectionSettings from "./ConnectionSettings";
+import {RiskInterpretation} from "./PreferenceEvidence";
 import CustomerLearning from "./CustomerLearning";
 import { requestJson } from "./connectionRequest";
 import "./portfolio.css";
@@ -102,6 +103,10 @@ export default function PortfolioPanel({clients}) {
       <p>{run.status==="error"?"Execution stopped":run.mode === "explicit_tool_execution" ? "Calculated directly with portfolio tools" : "Portfolio Agent response"}{run.model?` · ${run.model}`:""}</p>
       {result?.asset_classes && <><h3>Current value: {money(result.total_market_value)}</h3><div className="portfolio-table"><table><thead><tr><th>Asset class</th><th>Current</th><th>Target</th><th>Drift (pp)</th><th>Hypothetical adjustment</th></tr></thead><tbody>{Object.entries(result.asset_classes).map(([key,value])=><tr key={key}><td>{key}</td><td>{percent(value.current_weight)}</td><td>{percent(value.target_weight)}</td><td>{value.drift_percentage_points.toFixed(4)}</td><td>{money(value.hypothetical_adjustment_usd)}</td></tr>)}</tbody></table></div></>}
       {result?.annual_volatility !== undefined && <><h3>Annual expected return: {percent(result.annual_expected_return)}</h3><p>Annual volatility: {percent(result.annual_volatility)} · Draft stock/bond model</p></>}
+      {Number.isFinite(result?.annual_volatility) && <RiskInterpretation result={result} snapshot={run.learning_context_used} onFollowUp={changeContext(setTask)}/>}
+      {run.mode==='adk_gemini' && run.learning_context_used && <p>{run.learning_context_used.context
+        ? '本次已提供当前客户的学习资料，可在下方核对来源。'
+        : '本次客户资料暂不可用，已确认偏好仍待核实。'}</p>}
       {result?.success_probability !== undefined && <><h3>Simulated goal success: {(result.success_probability*100).toFixed(1)}%</h3><p>Goal: {money(result.goal.target_amount)} in {result.goal.years} years · Starting value: {money(result.initial_value)}</p><p>95% sampling interval: {percent(result.success_probability_interval.lower)}–{percent(result.success_probability_interval.upper)} · {result.num_simulations.toLocaleString()} paths · Seed {result.seed}. This interval excludes uncertainty in the model and assumptions.</p><p>Ending median: {money(result.ending_value_median)} · 10th–90th percentile: {money(result.ending_value_p10)}–{money(result.ending_value_p90)}</p><p>Depletion probability: {percent(result.depletion_probability)} · {result.goal.years} years · Annual contribution {money(result.goal.annual_contribution)} · Annual withdrawal {money(result.goal.annual_withdrawal)}</p><p>End-year cash flows; nominal USD. Includes all fixture accounts without modeling access restrictions.</p><p className="portfolio-warning">Stored draft note: {result.stored_goal.assumption}</p><p>Inputs changed for this run: {Object.keys(result.scenario_overrides).join(", ") || "None; stored draft used"}.</p></>}
       {result?.accounts && <><h3>Total fixture value: {money(result.total_market_value)}</h3>{result.accounts.map(a=><div key={a.account_id}><h4>{a.account_id}</h4><ul>{a.holdings.map((h,i)=><li key={i}>{h.ticker}: {money(h.market_value)}</li>)}</ul></div>)}</>}
       {result?.price && <h3>{result.symbol}: {money(result.price,result.currency)} · {result.currency} · {result.as_of}</h3>}

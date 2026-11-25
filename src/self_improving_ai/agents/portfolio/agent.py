@@ -9,7 +9,7 @@ from google.adk import Agent
 from self_improving_ai.agents.portfolio.instructions import PORTFOLIO_INSTRUCTION
 from self_improving_ai.agents.portfolio.model_settings import PortfolioGemini, portfolio_api_key
 from self_improving_ai.config import settings
-from self_improving_ai.agents.portfolio.learning import get_client_learning_context
+from self_improving_ai.agents.portfolio.learning import get_client_learning_context, read_analysis_context
 from self_improving_ai.tools.portfolio.allocation import calculate_allocation_drift
 from self_improving_ai.tools.portfolio.holdings import _load_households, get_holdings
 from self_improving_ai.tools.portfolio.market_data_api import (
@@ -53,6 +53,11 @@ def create_portfolio_agent(model=None, *, client_id=None, learning_context=None,
         if account_id and tool.name in ACCOUNT_SCOPED_TOOLS and args.get("account_id") != account_id:
             return {"status": "error", "error": {"code": "ACCOUNT_CONTEXT_MISMATCH",
                                                  "message": "Use the selected account for this tool."}}
+        if (tool.name == "get_client_learning_context" and learning_context
+                and args.get("client_id") == client_id and (args.get("account_id") or None) == account_id
+                and learning_context.get("status") == "connected"):
+            scope = (learning_context.get("context") or {}).get("scope") or {}
+            return read_analysis_context(client_id, account_id, scope.get("analysis_id"))
         if account_id and tool.name == "project_financial_goal":
             return {"status": "error", "error": {"code": "ACCOUNT_PROJECTION_UNSUPPORTED",
                                                  "message": "Goal projection requires a household scenario."}}

@@ -115,3 +115,17 @@ test('a rate-limited note stays visible while waiting to retry',async({page})=>{
   await expect(learning.locator('.learning-event')).toContainText(userText);
   await expect(learning.getByRole('button',{name:'重试待处理记录'})).toBeEnabled();
 });
+
+
+test('risk results explain the calculation using the saved customer need', async({page})=>{
+  await page.route('**/api/portfolio/execute',route=>route.fulfill({json:{
+    status:'success',mode:'explicit_tool_execution',result:{annual_expected_return:.05,annual_volatility:.14546},
+    learning_context_used:{status:'connected',context:{client_cues:[{value:'liquidity',evidence_text:'下个月有学费支出'}]}}
+  }}));
+  await page.getByLabel('Analysis',{exact:true}).selectOption('risk');
+  await page.getByRole('button',{name:'Run analysis',exact:true}).click();
+  const panel=page.getByRole('region',{name:'结合客户信息解读风险'});
+  await expect(panel).toContainText('14.5%');
+  await expect(panel).toContainText('下个月有学费支出');
+  await expect(panel).toContainText('试算相应提款');
+});

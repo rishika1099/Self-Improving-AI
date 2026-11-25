@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from threading import Lock
 from self_improving_ai.tools.portfolio.holdings import _load_households
 from self_improving_ai.agents.portfolio.learning import (
-    event_from, get_client_learning_context, record_finish, record_start, valid_client,
+    event_from, read_analysis_context, record_finish, record_start, valid_client,
 )
 from self_improving_ai.agents.portfolio.service import execute_task, run_portfolio_agent
 
@@ -62,10 +62,16 @@ def calculate_for_client(task, arguments, client_id, metadata):
     require_client(client_id)
     event = event_from(client_id, 'allocation_drift' if task=='allocation' else task,arguments,metadata)
     with request_slot(client_id,event['event_id']):
+        # Capture the previously verified profile before this calculation creates a pending event.
+        context = (read_analysis_context(client_id, arguments.get("account_id") or None, metadata.get("evidence_group_id"))
+                   if task == "risk" else None)
         journal, cached = record_start(event)
         if cached is not None:
             return cached
-        return record_finish(journal,event,execute_task(task,arguments))
+        run = execute_task(task,arguments)
+        if context is not None:
+            run["learning_context_used"] = context
+        return record_finish(journal,event,run)
 
 
 async def analyze_for_client(message, client_id, metadata, *, account_id=None):
@@ -79,7 +85,13 @@ async def analyze_for_client(message, client_id, metadata, *, account_id=None):
         # This lets a delivered learner use explicit current input in this request.
         if journal:
             await asyncio.to_thread(journal.sync,client_id)
-        context = await asyncio.to_thread(get_client_learning_context, client_id, account_id)
+        context = await asyncio.to_thread(read_analysis_context, client_id, account_id, metadata.get("evidence_group_id"))
+        # A model parse can outlast the short web write budget. Give the active write
+        # a bounded chance to finish before answering with an unavailable snapshot.
+        deadline = asyncio.get_running_loop().time() + 5
+        while context.get("status") == "module_busy" and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(.25)
+            context = await asyncio.to_thread(read_analysis_context, client_id, account_id, metadata.get("evidence_group_id"))
         run = await run_portfolio_agent(message, client_id=client_id, learning_context=context,
                                         account_id=account_id)
         run['learning_context_used'] = context

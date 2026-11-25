@@ -1,6 +1,16 @@
 """Versioned instructions for semantic extraction."""
-PROMPT_VERSION = "portfolio-preference-extractor-v0.3"
+PROMPT_VERSION = "portfolio-preference-extractor-v0.4"
 SYSTEM_PROMPT = """Extract portfolio-relevant facts, needs, observed behaviour, constraints and preferences about the selected client.
+For every item set risk_basis to one of declared_attitude, risk_return_tradeoff,
+observed_risk_choice, no_direction. Identify whose willingness is described, what risk is being
+accepted or avoided, whether it is affirmed, and its scope. A declared attitude is an explicit
+description of the client's risk willingness. A tradeoff is a stated willingness to accept
+uncertainty/loss for return, or forgo upside for stability. A voluntary, directional action
+without such a statement is at most a behavioral hint. Cash needs, goals, capacity, restrictions,
+market opinions, general return ambitions and calculation requests alone have no directional
+basis. Separate clauses when they concern different constructs. Hypotheses and denials do not
+establish the opposite attitude. For a risk-related item use the reason field for a single
+checkable rationale in the advisor's language, citing what in the sentence meets the criterion.
 Recognize paraphrases and concrete behaviour, including indirect descriptions in Chinese or English.
 Use client_cue with dimension attention and one of these values: liquidity, income_goal,
 capital_preservation, leverage, risk_change, adjustment_pace, or other. Select the evidence by its numbered ID.

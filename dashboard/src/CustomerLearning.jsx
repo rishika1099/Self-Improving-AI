@@ -1,4 +1,5 @@
 import React, {useEffect, useState, useRef} from 'react';
+import {RiskScore} from './RiskScore';
 import {describeEvidence, EventImpact} from './PreferenceEvidence';
 import {requestJson} from './connectionRequest';
 
@@ -68,6 +69,7 @@ export default function CustomerLearning({client,clientName,group,refresh,disabl
       记录已保存，建议在 {new Date(providerIssue.retry_at).toLocaleTimeString()} 后重试。
     </p>}
     <p>当前客户：{clientName||client} · 待处理记录：{view?.pending_count??'—'}{view?.review_count ? ` · 需确认记录：${view.review_count}` : ''}。记录操作不代表客户已接受或执行方案。</p>
+    <RiskScore scores={context?.risk_preference_scores} visibleEvents={latest}/>
     <label>补充客户说明<textarea aria-label="补充客户说明" value={note} maxLength={3000} disabled={busy||disabled} onChange={e=>setNote(e.target.value)} placeholder="例如：该客户整体比较保守。也可以记录假设或纠正，含义由学习模块判断。"/></label>
     <div className="learning-actions">
       <button disabled={busy||disabled||!note.trim()} onClick={()=>{const key=JSON.stringify([note,group]);if(noteAttempt.current?.key!==key)noteAttempt.current={key,id:crypto.randomUUID()};action('/notes',{message:note,client_id:client,observation:{event_id:noteAttempt.current.id,evidence_group_id:group,text_source:'manual'}});}}>保存客户说明</button>
@@ -79,7 +81,7 @@ export default function CustomerLearning({client,clientName,group,refresh,disabl
       <p>暂时没有可供后续分析使用的客户信息。模块接入并处理记录后，这里会显示返回的信息。</p>}
     <h4>最近操作与学习结果</h4>
     {view&&!latest.size&&<p>还没有操作。可以先运行一次计算，或补充一条客户说明。</p>}
-    {[...latest.values()].reverse().map(row=><article key={row.event_id} className="learning-event">
+    {[...latest.values()].reverse().map(row=><article key={row.event_id} id={'learning-event-'+encodeURIComponent(row.event_id)} className="learning-event">
       <strong>{row.event.user_text||({allocation_drift:'配置偏离试算',risk:'风险指标计算',projection:'目标预测',holdings:'持仓查询',quote:'外部报价查询',history:'历史价格查询'}[row.event.task]||row.event.task)}</strong>
       <p>{new Date(row.event.occurred_at).toLocaleString()} · {deliveryLabels[row.delivery_status] || deliveryLabels.pending}{retracts.has(row.event_id)?` · ${retracts.get(row.event_id).delivery_status==='applied'?'已撤回':'撤回待处理'}`:''}</p>
       <EventImpact row={row} withdrawn={retracts.has(row.event_id)}/>

@@ -39,8 +39,8 @@ class CalculationRequest(BaseModel):
 
     @model_validator(mode="after")
     def reject_ignored_scenarios(self):
-        if self.task != "allocation" and self.target_stock_weight is not None:
-            raise ValueError("Stock target is only supported for allocation drift.")
+        if self.task not in {"allocation", "risk"} and self.target_stock_weight is not None:
+            raise ValueError("Stock target is supported for allocation drift and risk comparison.")
         if self.task != "projection" and any(getattr(self, key) is not None for key in
                 ("target_amount", "years", "annual_contribution", "annual_withdrawal")):
             raise ValueError("Goal overrides are only supported for goal projection.")
@@ -67,7 +67,7 @@ async def calculate(request: CalculationRequest):
         args.update({key: getattr(request, key) for key in
                      ("target_amount", "years", "annual_contribution", "annual_withdrawal")
                      if getattr(request, key) is not None})
-    if request.task == "allocation" and request.target_stock_weight is not None:
+    if request.task in {"allocation", "risk"} and request.target_stock_weight is not None:
         args["target_stock_weight"] = request.target_stock_weight
     if request.task in {"quote", "history"}:
         args = {"symbol": request.symbol}

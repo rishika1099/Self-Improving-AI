@@ -32,6 +32,23 @@ def classified_values(client_id: str, account_id: str = "") -> dict:
     return values
 
 
+def allocation_target(client_id, target_stock_weight=None):
+    if target_stock_weight is None:
+        target = client_record("target_allocations.json", "allocations", client_id)["weights"]
+    else:
+        if (isinstance(target_stock_weight, bool)
+                or not isinstance(target_stock_weight, (int, float))
+                or not math.isfinite(target_stock_weight) or not 0 <= target_stock_weight <= 1):
+            raise PortfolioInputError(failure("INVALID_TARGET", "Stock target must be a decimal between 0 and 1."))
+        target = {"stock": target_stock_weight, "bond": 1 - target_stock_weight}
+    if set(target) != {"stock", "bond"} or any(
+        isinstance(v, bool) or not isinstance(v, (float, int))
+        or not math.isfinite(v) or not 0 <= v <= 1 for v in target.values()
+    ) or not math.isclose(sum(target.values()), 1, abs_tol=1e-9, rel_tol=0):
+        raise ValueError("Invalid target weights.")
+    return target
+
+
 def calculate_allocation_drift(client_id: str, account_id: str = "",
                                target_stock_weight: float | None = None) -> dict:
     """Compare fixture stock/bond values against the client's draft target.
@@ -46,18 +63,7 @@ def calculate_allocation_drift(client_id: str, account_id: str = "",
     """
     try:
         values = classified_values(client_id, account_id)
-        target = client_record("target_allocations.json", "allocations", client_id)["weights"]
-        if target_stock_weight is not None:
-            if (isinstance(target_stock_weight, bool)
-                    or not isinstance(target_stock_weight, (int, float))
-                    or not math.isfinite(target_stock_weight) or not 0 <= target_stock_weight <= 1):
-                return failure("INVALID_TARGET", "Stock target must be a decimal between 0 and 1.")
-            target = {"stock": target_stock_weight, "bond": 1 - target_stock_weight}
-        if set(target) != set(values) or any(
-            isinstance(v, bool) or not isinstance(v, (float, int))
-            or not math.isfinite(v) or not 0 <= v <= 1 for v in target.values()
-        ) or not math.isclose(sum(target.values()), 1, abs_tol=1e-9, rel_tol=0):
-            raise ValueError("Invalid target weights.")
+        target = allocation_target(client_id, target_stock_weight)
         total = sum(values.values())
         classes = {key: {"market_value": value, "current_weight": value / total,
                          "target_weight": target[key],

@@ -16,7 +16,13 @@ Use the supplied client directory to match names, IDs and accounts. Never infer
 name/ID correspondence from list order. If a supplied name conflicts with its ID,
 ask for clarification before calculating. Keep requested client order in comparisons.
 Use get_holdings for holdings; calculate_allocation_drift for target deviations;
-estimate_portfolio_risk for annual return/volatility; project_financial_goal for goals.
+estimate_portfolio_risk for annual return/volatility and the comparison against the supplied stock
+target or stored draft. Cite scenario_comparison deltas in percentage points and its target source.
+Use risk_preference_scores only as an uncalibrated willingness index. Show applicable scope,
+support and any legacy or disputed evidence. Never infer a volatility ceiling, allocation,
+loss budget or suitability decision from the index. Treat a comparison target as hypothetical; a draft is never a recommendation. Scores with legacy_text require review before relying on that classification. When comparing scenarios, use evidence
+of willingness to decide which trade-off to highlight, and check liquidity/capacity separately;
+use project_financial_goal for goals.
 Use get_portfolio_scenarios when goals/assumptions need inspection.
 Honor explicitly requested stock/bond targets via target_stock_weight and goal
 amount, years, contributions and withdrawals via their tool parameters. Omitted

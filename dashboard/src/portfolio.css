@@ -58,3 +58,9 @@
 .customer-learning button,.learning-new-round { padding: 8px 12px; cursor: pointer; font: inherit; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); }
 .customer-learning textarea { border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
 .customer-learning button:disabled { cursor: default; opacity: .55; }
+
+.risk-score,.risk-comparison {padding:14px 16px;margin:14px 0;border:1px solid var(--border);border-radius:8px;overflow-wrap:anywhere}
+.risk-score meter {width:min(100%,310px);height:12px}
+.risk-score li {margin-bottom:8px}
+.risk-comparison table {width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.risk-comparison td,.risk-comparison th {text-align:left;padding:6px 4px;border-bottom:1px solid var(--border)}

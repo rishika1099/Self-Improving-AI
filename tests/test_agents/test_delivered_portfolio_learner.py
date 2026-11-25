@@ -28,7 +28,8 @@ FACTORY = "self_improving_ai.agents.portfolio.preference_learning.adapter:create
 
 def signal(text, *, kind="explicit_statement", dimension="risk_tilt", value="conservative", **extra):
     return {"kind": kind, "dimension": dimension, "value": value, "assertion": "affirmed",
-            "evidence_text": text, "reason": "Synthetic fixture", "scope": None, **extra}
+            "evidence_text": text, "reason": "Synthetic fixture", "scope": None,
+            "risk_basis": "declared_attitude" if dimension == "risk_tilt" else "no_direction", **extra}
 
 
 @pytest.fixture
@@ -400,3 +401,54 @@ def test_invalid_source_reference_cannot_be_used():
     invalid={**signal(STATEMENT),"evidence_id":99}
     result=extract_signals(event, lambda _: [invalid])
     assert result["status"] == "partial" and result["signals"] == []
+
+
+def test_risk_score_audit_and_scenario_comparison(api):
+    def score():
+        return api.get(API).json()["context"]["risk_preference_scores"][0]
+    assert score()["score"] is None
+    note(api, STATEMENT, "declared-risk")
+    card = score()
+    assert card["score"] == pytest.approx(100 / 9.5)
+    assert card["evidence"][0]["multipliers"] == [8, 1, .5]
+    assert card["evidence"][0]["running_score"] == pytest.approx(card["score"])
+    assert card["evidence"][0]["source"] == STATEMENT
+    assert card["evidence"][0]["criterion"] == "declared_attitude"
+    for target in (0, .6, 1):
+        run = api.post("/api/portfolio/execute", json={"task":"risk","client_id":CLIENT,
+                       "target_stock_weight":target}).json()
+        comp = run["result"]["scenario_comparison"]
+        assert comp["source"] == "manual_scenario" and comp["weights"]["stock"] == target
+        assert comp["volatility_delta_pp"] == pytest.approx(
+            100 * (comp["annual_volatility"] - run["result"]["annual_volatility"]))
+        assert run["learning_context_used"]["context"]["risk_preference_scores"][0]["score"] == card["score"]
+        assert score()["score"] == card["score"]
+    assert api.get("/api/portfolio/learning/CLI-002").json()["context"]["risk_preference_scores"][0]["score"] is None
+    api.post(f"{API}/retract/declared-risk").raise_for_status()
+    assert score()["score"] is None
+
+
+@pytest.mark.parametrize("criterion,assertion,expected", [
+    ("no_direction","affirmed",None), ("observed_risk_choice","affirmed","weak"),
+    ("risk_return_tradeoff","affirmed","explicit"), ("risk_return_tradeoff","hypothetical",None),
+    ("declared_attitude","negated",None),
+])
+def test_semantic_evidence_gate(criterion, assertion, expected):
+    event = learning.event_from(CLIENT, "client_statement", {}, {}, STATEMENT, "advisor_note")
+    evidence = signal(STATEMENT,risk_basis=criterion,assertion=assertion)
+    result = extract_signals(event, lambda _: [evidence])
+    scored = [s for s in result["signals"] if s["dimension"] == "risk_tilt" and s["strength"]!="none"]
+    assert [s["strength"] for s in scored] == ([expected] if expected else [])
+
+
+def test_conflicting_risk_evidence_withholds_score_until_retracted(api, monkeypatch):
+    text = "Advisor denies the earlier conservative risk statement."
+    note(api, STATEMENT, "initial-declaration")
+    monkeypatch.setattr("self_improving_ai.agents.portfolio.preference_learning.adapter.PortfolioParser.parse_scoped",
+                        lambda self, message, scope: [signal(message, assertion="negated")])
+    note(api, text, "later-denial")
+    card=api.get(API).json()["context"]["risk_preference_scores"][0]
+    assert card["status"] == "conflict" and card["score"] is None
+    restored=api.post(f"{API}/retract/later-denial").json()["context"]["risk_preference_scores"][0]
+    assert restored["score"] == pytest.approx(100 / 9.5)
+    assert len(restored["evidence"]) == 1

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from self_improving_ai.tools.portfolio.allocation import classified_values
+from self_improving_ai.tools.portfolio.allocation import allocation_target, classified_values
 from self_improving_ai.tools.portfolio.scenarios import (
     PortfolioInputError,
     failure,
@@ -29,12 +29,15 @@ def portfolio_statistics(weights, expected_returns, covariance) -> dict:
             "return_unit": "decimal_arithmetic_annual", "volatility_unit": "decimal_annual"}
 
 
-def estimate_portfolio_risk(client_id: str, account_id: str = "") -> dict:
+def estimate_portfolio_risk(client_id: str, account_id: str = "",
+                            target_stock_weight: float | None = None) -> dict:
     """Estimate stock/bond return and volatility using draft synthetic assumptions.
 
     Args:
         client_id: Synthetic household identifier.
         account_id: Optional account filter, empty for all household accounts.
+        target_stock_weight: Optional hypothetical stock weight (0 to 1) for comparison.
+            Without an override, compare with the household draft. Current statistics always use holdings.
     """
     try:
         values = classified_values(client_id, account_id)
@@ -45,7 +48,20 @@ def estimate_portfolio_risk(client_id: str, account_id: str = "") -> dict:
         weights = [values[key] / sum(values.values()) for key in classes]
         stats = portfolio_statistics(weights, inputs["annual_expected_returns"],
                                      inputs["annual_covariance"])
-        return {"status": "success", **metadata(), "client_id": client_id,
+        # The comparison uses the same market assumptions and valuation scope as the holdings.
+        try:
+            target = allocation_target(client_id, target_stock_weight)
+            target_stats = portfolio_statistics([target[key] for key in classes], inputs["annual_expected_returns"],
+                                                inputs["annual_covariance"])
+            comparison = {"status": "success", "weights": target, **target_stats,
+                          "source": "stored_household_draft" if target_stock_weight is None else "manual_scenario",
+                          "volatility_delta_pp": 100 * (target_stats["annual_volatility"] - stats["annual_volatility"]),
+                          "return_delta_pp": 100 * (target_stats["annual_expected_return"] - stats["annual_expected_return"])}
+        except (KeyError, ValueError, OSError) as exc:
+            if isinstance(exc, PortfolioInputError):
+                raise
+            comparison = {"status": "unavailable"}
+        return {"status": "success", "scenario_comparison": comparison, **metadata(), "client_id": client_id,
                 "account_id": account_id or None, "model_level": inputs["model_level"],
                 "weights": dict(zip(classes, weights, strict=True)), **stats}
     except PortfolioInputError as exc:

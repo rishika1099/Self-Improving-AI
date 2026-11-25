@@ -19,7 +19,7 @@ EXTRACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_id", "reason"],
+                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_id", "reason", "risk_basis"],
                 "properties": {
                     "kind": {"type": "string"},
                     "dimension": {"type": "string", "enum": ["risk_tilt", "adjustment_style", "attention", "constraint", "correction"]},
@@ -40,6 +40,7 @@ EXTRACTION_SCHEMA = {
                             "unresolved": {"type": "boolean"},
                         },
                     },
+                    "risk_basis": {"type": "string"},
                     "evidence_id": {"type": "integer"},
                     "reason": {"type": "string"},
                     "target_event_id": {"type": "string"},

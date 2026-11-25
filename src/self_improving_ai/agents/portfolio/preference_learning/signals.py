@@ -1,6 +1,7 @@
 """Convert validated events and exact text excerpts to versioned signals."""
 from __future__ import annotations
 import json
+from .prompts import PROMPT_VERSION
 from .parser import ParseError, ParsePacket, numbered_excerpts
 from .schemas import DIMENSIONS, canonical, event_scope, issue, normalize_scope, validate_event
 
@@ -126,6 +127,16 @@ def extract_signals(event, parse_text=None):
         kind, dim, value, assertion = (item[k] for k in ("kind","dimension","value","assertion"))
         scope, evidence = item["scope"], item["evidence_text"]
         extra = dict(scope=scope, evidence_text=evidence, assertion=assertion)
+        if dim == "risk_tilt":
+            basis = item.get("risk_basis")
+            extra.update(risk_basis=basis, semantic_reason=item["reason"], prompt_version=parser.get("prompt_version"))
+            if (parser.get("prompt_version") == PROMPT_VERSION or basis is not None) and assertion == "affirmed":
+                if basis == "observed_risk_choice":
+                    kind = "behavioral_hint"
+                elif basis not in {"declared_attitude", "risk_return_tradeoff"}:
+                    make("ATTENTION", "attention", "unscored_observation", "none", "attention_only",
+                         evidence, "No supported direction for risk willingness.", **extra)
+                    continue
         if kind == "correction":
             target_id = item.get("target_event_id")
             if target_id and assertion == "affirmed":
@@ -162,7 +173,7 @@ def extract_signals(event, parse_text=None):
 def _validate_text(raw, event):
     if not isinstance(raw, dict):
         raise ValueError("Each semantic signal must be an object.")
-    i = {k: raw.get(k) for k in ("kind","dimension","value","assertion","scope","evidence_text","reason","target_event_id")}
+    i = {k: raw.get(k) for k in ("kind","dimension","value","assertion","scope","evidence_text","reason","target_event_id","risk_basis")}
     kind, dim, val, assertion, evidence = (i[k] for k in ("kind","dimension","value","assertion","evidence_text"))
     if not all(isinstance(x, str) for x in (kind, dim, assertion)) or kind not in KINDS or assertion not in ASSERTIONS:
         raise ValueError("Unknown semantic kind, dimension or assertion.")

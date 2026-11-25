@@ -1,4 +1,5 @@
 import React from 'react';
+import {scopeName} from './RiskScore';
 
 const names = {risk_tilt:'风险倾向',adjustment_style:'调整方式',conservative:'保守',balanced:'均衡',
   growth:'偏向较高风险',gradual:'分阶段调整',flexible:'可接受一次较大调整',liquidity:'近期用钱需求',
@@ -45,17 +46,20 @@ export function EventImpact({row,withdrawn}) {
   const extraction = row.update?.extraction;
   if (!extraction) return null;
   const signals = extraction.signals || [];
-  if (!signals.length) return <p>本条已处理，未提取出可用的客户线索。</p>;
+  if (!signals.length) return <p>本条已处理，未提取出客户线索，未新增计分依据。</p>;
   const applied = new Set(row.update.applied || []);
-  return <ul>{signals.map(s=>{
+  return <><ul>{signals.map(s=>{
     let explanation;
     if (!applied.has(s.signal_id)) explanation = '本条在本次更新中未单独计权';
     else if (s.kind === 'behavioral_hint' || s.kind === 'allocation_exploration')
       explanation = '暂定方向 · ' + label(s.dimension) + ' / ' + label(s.value) + (s.strength==='medium'?'（中等证据）':'（弱证据）');
     else if (s.kind === 'explicit_statement' || s.kind === 'preference_change') explanation = '团队说明 · ' + label(s.value);
     else explanation = describeEvidence(s);
+    if (s.kind==='client_cue' && s.reason) explanation += '。提取理由：' + s.reason;
     return <li key={s.signal_id}>{explanation}</li>;
-  })}</ul>;
+  })}</ul>{row.update.risk_score_changes?.length ? row.update.risk_score_changes.map(change=><p key={JSON.stringify(change.scope)}>
+      本次修订的风险意愿分（{scopeName(change.scope)}） {change.before?.toFixed(1) ?? '暂无分数'} → {change.after?.toFixed(1) ?? '暂无分数'}
+    </p>) : !signals.some(s=>s.dimension==='risk_tilt') && <p>对风险意愿分的直接贡献为 0。</p>}</>;
 }
 
 export function RiskInterpretation({result,snapshot,onFollowUp}) {
@@ -74,10 +78,27 @@ export function RiskInterpretation({result,snapshot,onFollowUp}) {
   const constraints=context?.explicit_constraints || [];
   const nextTask = liquidity || income ? 'projection' : 'allocation';
   const emphasis = {conservative:'先看波动与本金承受能力，再看预期收益。',growth:'核对为争取收益而承担的波动是否在客户可接受范围内。',balanced:'把预期收益与波动放在一起，核对客户愿意承担的取舍。'};
+  const comparison = result.scenario_comparison;
+  const general = context?.risk_preference_scores?.find(s=>!s.scope);
   return <section aria-label="结合客户信息解读风险"><h4>这次风险计算怎么用</h4>
     <p>按当前持仓和草稿假设，组合年化波动率为 {pct(result.annual_volatility)}。这个指标描述组合收益的波动程度。</p>
+    {comparison?.status==='success' && <div className="risk-comparison">
+      <h4>配置情景比较</h4>
+      <p>{comparison.source==='manual_scenario'?'本次指定情景':'客户整体草稿情景'} · 股票 {(100*comparison.weights.stock).toFixed(1)}%，债券 {(100*comparison.weights.bond).toFixed(1)}%。两列采用相同的股票和债券假设。</p>
+      <table><thead><tr><th>年化指标</th><th>当前持仓</th><th>试算组合</th><th>变化（百分点）</th></tr></thead><tbody>
+        {[['波动率','annual_volatility','volatility_delta_pp'],['预期收益','annual_expected_return','return_delta_pp']].map(([title,key,delta])=>
+          <tr key={key}><th>{title}</th><td>{(result[key]*100).toFixed(2)}%</td><td>{(comparison[key]*100).toFixed(2)}%</td>
+            <td>{comparison[delta]>0?'+':''}{comparison[delta].toFixed(2)}</td></tr>)}
+      </tbody></table>
+      {general?.score!=null && <p>客户整体风险意愿分 {general.score.toFixed(1)} / 100{general.evidence.some(e=>e.legacy_text)?'（含待复核的旧分类）':''}。{general.evidence.some(e=>e.legacy_text) ? '先在客户风险意愿分中复核旧原话，再决定重点讨论哪项变化。' : general.support.conservative>Math.max(general.support.balanced,general.support.growth)
+        ? '讨论时先核对两种情景的波动差异，再确认客户能否接受相应的收益变化。'
+        : general.support.growth>Math.max(general.support.balanced,general.support.conservative)
+          ? '讨论时先核对两种情景的预期收益差异，再确认客户是否愿意承担相应波动。'
+          : '讨论时一并核对两项变化，向客户确认更看重哪一项。'}</p>}
+      {general?.status==='conflict' && <p>客户风险证据有分歧。先核实原话，再讨论两个情景的取舍。</p>}
+    </div>}
     {!context ? <p>本次未取得可用的客户资料，适配性仍待核实。</p> : <>
-      {risk && <p>已记录的风险倾向为{label(risk.value)}（依据「{risk.evidence_text}」）。{emphasis[risk.value]}</p>}
+      {risk && general?.status!=='conflict' && !general?.evidence.some(e=>e.legacy_text) && <p>已记录的风险倾向为{label(risk.value)}（依据「{risk.evidence_text}」）。{emphasis[risk.value]}</p>}
       {!risk && tentative && <p>目前只有暂定线索。{describeEvidence(tentative)}。请先与客户核实可接受的波动。</p>}
       {!risk && !tentative && <p>客户风险倾向尚待了解，可询问其对组合价值起伏的接受程度。</p>}
       {context.conflicts?.length>0 && <p>资料中有分歧，请在作出适配判断前核实相关原话。</p>}

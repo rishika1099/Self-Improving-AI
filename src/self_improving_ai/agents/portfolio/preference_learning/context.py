@@ -1,5 +1,7 @@
 """Build a read-only context without turning inferred preferences into tool parameters."""
 from __future__ import annotations
+import math
+from .learner import load_rules, normalize_log_support, risk_preference_index
 from .schemas import DIMENSIONS, normalize_scope, timestamp
 
 
@@ -10,7 +12,42 @@ def _applies(candidate, requested):
     return all(requested.get(key) == value for key, value in candidate.items())
 
 
-def build_context(state, scope=None):
+def risk_score(view, state, rules, conflicts):
+    belief = view["beliefs"]["risk_tilt"]
+    ids = set(belief["active_signal_ids"])
+    labels = DIMENSIONS["risk_tilt"]
+    prior = rules["priors"]["risk_tilt"]
+    logs = [math.log(p) for p in prior]
+    ledger = []
+    for signal in state["active_evidence"]:
+        if signal["signal_id"] not in ids:
+            continue
+        factors = rules["rules"][signal["rule_id"]]["multipliers"]
+        logs = [v + math.log(factor) for v, factor in zip(logs, factors)]
+        probs = dict(zip(labels, normalize_log_support(logs)))
+        ledger.append({"event_id": signal["source_event_id"], "revision": signal["source_revision"],
+                       "group": signal["evidence_group_id"], "rule": signal["rule_id"],
+                       "source": signal.get("evidence_text"), "parameters": signal.get("basis"),
+                       "criterion": signal.get("risk_basis"), "interpretation": signal.get("semantic_reason"),
+                       "legacy_text": bool(signal.get("evidence_text") and not signal.get("risk_basis")),
+                       "strength": signal["strength"], "multipliers": factors,
+                       "running_score": risk_preference_index(probs)})
+    reasons = [c["kind"] for c in conflicts if c.get("dimension") == "risk_tilt"
+               and (c.get("scope") == view.get("scope") or c["kind"] == "applicable_scopes_disagree")]
+    for row in ledger:
+        # Sensitivity of the active set only. An actual retraction additionally replays
+        # superseded evidence and can therefore have a different outcome.
+        without = [v - math.log(m) for v, m in zip(logs, row["multipliers"])]
+        row["score_without_this_factor"] = (risk_preference_index(dict(zip(labels, normalize_log_support(without))))
+                                             if len(ledger) > 1 else None)
+    status = "conflict" if reasons else "scored" if ledger else "insufficient"
+    return {"score": risk_preference_index(belief["probabilities"]) if status == "scored" else None,
+            "status": status, "scope": view.get("scope"), "support": belief["probabilities"],
+            "prior": dict(zip(labels, prior)), "evidence": ledger, "conflicts": reasons,
+            "rule_version": rules["rule_version"], "default_group_limit": rules.get("max_default_groups_per_scope")}
+
+
+def build_context(state, scope=None, rules=None):
     scope = normalize_scope(scope)
     applicable = [state] + [r for r in state["scoped"] if _applies(r["scope"], scope)]
     declared, tentative = [], []
@@ -64,7 +101,11 @@ def build_context(state, scope=None):
     if conflicts:
         summary.append("Some applicable evidence conflicts; verify with the advisor.")
     summary.append("Unknown: "+", ".join(unknowns)+".")
-    return {"client_id":state["client_id"],"profile_version":state["profile_version"],"scope":scope,
+    rules = rules or load_rules()
+    scores = [risk_score(view, state, rules, conflicts) for view in applicable
+              if view is state or view["beliefs"]["risk_tilt"]["active_signal_ids"]
+              or any(c.get("dimension") == "risk_tilt" and c.get("scope") == view.get("scope") for c in conflicts)]
+    return {"risk_preference_scores": scores, "client_id":state["client_id"],"profile_version":state["profile_version"],"scope":scope,
             "team_declared":declared,"tentative_preferences":tentative,"recent_attention":recent[-25:],
             "client_cues":cues[-25:], "explicit_constraints":constraints,"conflicts":conflicts,"unknowns":unknowns,
             "usage_notes":["Use context to explain portfolio analysis. Honor the advisor's current inputs.",

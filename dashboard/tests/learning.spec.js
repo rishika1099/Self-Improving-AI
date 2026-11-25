@@ -129,3 +129,23 @@ test('risk results explain the calculation using the saved customer need', async
   await expect(panel).toContainText('下个月有学费支出');
   await expect(panel).toContainText('试算相应提款');
 });
+
+
+test('risk willingness discloses scored evidence and an independent scenario',async({page})=>{
+  const context={summary:'test profile',risk_preference_scores:[{scope:null,score:10.526,status:'scored',
+    prior:{conservative:1/3,balanced:1/3,growth:1/3},support:{conservative:8/9.5,balanced:1/9.5,growth:.5/9.5},
+    evidence:[{event_id:'test-source',revision:2,source:'客户愿意少赚来减少波动',strength:'explicit',
+      criterion:'risk_return_tradeoff',multipliers:[8,1,.5],running_score:10.526}]}]};
+  await page.route('**/api/portfolio/learning/CLI-002',route=>route.fulfill({json:{
+    client_id:'CLI-002',status:'connected',pending_count:0,events:[],context}}));
+  await page.getByLabel('Client',{exact:true}).selectOption('CLI-002');
+  const score=page.getByRole('region',{name:'客户风险意愿分'});
+  await expect(score).toContainText('10.5 / 100');
+  await score.getByText('查看判据和逐条复算').click();
+  await expect(score).toContainText('8 / 1 / 0.5');
+  await page.getByLabel('Analysis',{exact:true}).selectOption('risk');
+  await page.getByLabel('Stock target (%)').fill('60');
+  await page.getByRole('button',{name:'Run analysis',exact:true}).click();
+  await expect(page.locator('.risk-comparison')).toContainText('本次指定情景');
+  await expect(page.locator('.risk-comparison')).toContainText('试算组合');
+});

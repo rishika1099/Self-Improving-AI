@@ -23,6 +23,18 @@ def _order(ex):
     return timestamp(event["occurred_at"]), event["event_id"], event["revision"]
 
 
+def risk_preference_index(probabilities):
+    """0, 50 and 100 are display coordinates for the three ordered hypotheses."""
+    return 50 * probabilities["balanced"] + 100 * probabilities["growth"]
+
+
+def normalize_log_support(logs):
+    peak = max(logs)
+    weights = [math.exp(x - peak) for x in logs]
+    total = sum(weights)
+    return [x / total for x in weights]
+
+
 def _belief(dim, selected, rules, declared, conflicts):
     labels = DIMENSIONS[dim]
     priors = rules["priors"][dim]
@@ -30,9 +42,7 @@ def _belief(dim, selected, rules, declared, conflicts):
     if contributions:
         logs = [math.fsum([math.log(p)] + [math.log(c[i]) for c in contributions])
                 for i, p in enumerate(priors)]
-        peak = max(logs)
-        weights = [math.exp(x - peak) for x in logs]
-        probabilities = {label: v / sum(weights) for label, v in zip(labels, weights)}
+        probabilities = dict(zip(labels, normalize_log_support(logs)))
     else:
         probabilities = dict(zip(labels, priors))
     return {
@@ -218,6 +228,7 @@ def result_from(before, after, *, status="ok", issues=()):
     """Explain the actual changed fields and cite both removed and newly applicable evidence."""
     state = after["state"]
     changes = []
+    risk_score_changes = []
     active = before.get("active_evidence", []) + state.get("active_evidence", [])
 
     def log(field, old, new, eligible, why):
@@ -237,6 +248,13 @@ def result_from(before, after, *, status="ok", issues=()):
         for dim in DIMENSIONS:
             old_b = old.get("beliefs", {}).get(dim)
             new_b = new.get("beliefs", {}).get(dim)
+            if dim == "risk_tilt" and old_b != new_b:
+                def display(belief):
+                    if belief and belief["active_signal_ids"] and belief["evidence_status"] != "conflicting_evidence":
+                        return risk_preference_index(belief["probabilities"])
+                    return None
+                risk_score_changes.append({"scope": json.loads(key),
+                                           "before": display(old_b), "after": display(new_b)})
             old_d = old.get("declared", {}).get(dim)
             new_d = new.get("declared", {}).get(dim)
             ids = (set(old_b["active_signal_ids"] if old_b else []) |
@@ -256,7 +274,7 @@ def result_from(before, after, *, status="ok", issues=()):
         else:
             ids = {eid for source in (before, state) for c in source.get(field, []) for eid in c["evidence_ids"]}
             log(field,before.get(field), state.get(field),lambda s: s["signal_id"] in ids,reason)
-    return {"status":status, "base_profile_version":before["profile_version"], "state":state,
+    return {"risk_score_changes":risk_score_changes, "status":status, "base_profile_version":before["profile_version"], "state":state,
             "applied":after["applied"], "ignored":after["ignored"],
             "issues":[*issues,*after["issues"]], "changes":changes}
 

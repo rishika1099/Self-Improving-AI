@@ -206,7 +206,7 @@ class PortfolioLearner:
     def get_context(self, client_id, scope=None):
         checked_id(client_id, "client_id")
         with closing(self._connect()) as db:
-            return build_context(self._state(db,client_id),scope)
+            return build_context(self._state(db,client_id),scope,self.rules)
 
     def retract_event(self, client_id, event_id, *, expected_profile_version=None, allow_missing=False):
         try:

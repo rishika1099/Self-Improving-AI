@@ -32,6 +32,7 @@ from google.genai.errors import APIError
 from self_improving_ai.agents.orchestrator.agent import orchestrator
 from self_improving_ai.agents.orchestrator.runtime import run_copilot
 from self_improving_ai.config import settings
+from self_improving_ai.display_language import contains_non_latin_text
 from self_improving_ai.agents.briefing.schemas import BriefExportRequest, MeetingBriefRequest
 from self_improving_ai.agents.briefing.pdf import render_brief_pdf
 from self_improving_ai.agents.briefing.service import generate_meeting_brief
@@ -426,6 +427,8 @@ def _meeting_chat_response(brief, *, event=None):
         steps.append({"agent": "meeting_briefing_agent", "action": "resolve_calendar_meeting",
                       "detail": "Found the matching client appointment and loaded its meeting details",
                       "tools_called": [], "origin": "backend_calendar_lookup"})
+    if contains_non_latin_text(response_text):
+        response_text = "The meeting brief is ready. Open it to review the draft and its sources."
     return {
         "response": response_text, "intent": "meeting_briefing",
         "client_id": brief["client_id"], "mode": brief["mode"], "brief": brief,
@@ -530,6 +533,11 @@ async def chat(req: ChatRequest):
         agents_used = ["Copilot"]
 
     response_text = response_parts[-1] if response_parts else "I'm not sure how to help with that. Could you rephrase?"
+    if contains_non_latin_text(response_text):
+        response_text = ("The meeting brief is ready. Open it to review the draft and its sources." if prepared else
+                         "The model did not return an English answer. Please try the request again.")
+        if not prepared:
+            error_code = "output_language_mismatch"
 
     return {
         "response": response_text,

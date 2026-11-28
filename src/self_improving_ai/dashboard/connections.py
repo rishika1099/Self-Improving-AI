@@ -14,7 +14,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, SecretStr
 from starlette.concurrency import run_in_threadpool
 
-from self_improving_ai.agents.portfolio.model_catalog import FREE_TIER_MODEL_IDS, GEMINI_MODELS
+from self_improving_ai.agents.portfolio.model_catalog import FREE_TIER_MODEL_IDS, GEMINI_MODELS, MODEL_OPTIONS_VERIFIED_ON
 from self_improving_ai.agents.portfolio.model_connection import test_model_connection
 from self_improving_ai.agents.portfolio.model_errors import model_failure
 from self_improving_ai.agents.portfolio.model_settings import portfolio_api_key
@@ -85,7 +85,7 @@ def status() -> dict:
                        "configured": bool(os.environ.get("TWELVE_DATA_API_KEY", "").strip())},
             "agent": {"provider": "gemini", "configured": bool(portfolio_api_key()),
                 "model": settings.portfolio_model, "model_options": GEMINI_MODELS,
-                "model_options_verified_on": "2026-11-02"},
+                "model_options_verified_on": MODEL_OPTIONS_VERIFIED_ON},
             "storage": "this_computer", "credentials_returned": False}
 
 

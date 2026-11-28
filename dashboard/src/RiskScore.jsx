@@ -1,51 +1,72 @@
 import React from 'react';
+import {OperationLink} from './OperationReference';
+import {englishText} from './displayLanguage';
 
-const hypotheses = [['conservative','保守'],['balanced','均衡'],['growth','较高风险']];
-const criteria = {declared_attitude:'顾问明确描述客户的风险意愿',risk_return_tradeoff:'客户说明了收益与风险之间的取舍',
-  observed_risk_choice:'客户主动选择承担或减少风险',directed_inquiry:'顾问主动探索具有方向的方案',
-  stock_target_inquiry:'顾问原话中的目标与实际试算相符',no_direction:'未给出风险方向'};
-const strengths = {explicit:'明确声明',medium:'中等信号',weak:'弱信号',strong:'强信号'};
+const hypotheses = [['conservative','Conservative'],['balanced','Balanced'],['growth','Higher risk']];
+const criteria = {declared_attitude:'The advisor explicitly described the client’s willingness to take risk',risk_return_tradeoff:'The client stated a trade-off between returns and risk',
+  observed_risk_choice:'The client actively chose to take or reduce risk',directed_inquiry:'The advisor explored a specific risk direction',
+  stock_target_inquiry:'The advisor’s stated target matches the trial',no_direction:'No risk direction was stated'};
+const strengths = {explicit:'Explicit statement',medium:'Moderate signal',weak:'Weak signal',strong:'Strong signal'};
+const exploratory = new Set(['exploration_differs_from_declaration','opposing_equal_evidence']);
+const support = value => Number.isFinite(value) ? (100*value).toFixed(1)+'%' : '—';
 
 export function scopeName(scope) {
-  if (!scope) return '客户整体';
-  return [scope.account_id,scope.goal_id,scope.applicability==='current' && '本轮分析'].filter(Boolean).join(' · ') || '客户整体';
+  if (!scope) return 'Household';
+  return [scope.account_id,scope.goal_id,scope.applicability==='current' && 'Current analysis round'].filter(Boolean).join(' · ') || 'Household';
 }
 
 function evidenceDescription(row) {
-  if (row.source) return row.source;
+  if (row.source) return englishText(row.source);
   const p=row.parameters || {};
   if (Number.isFinite(p.current_stock_weight) && Number.isFinite(p.target_stock_weight))
-    return (p.parameter_source==='manual'?'手动试算':'默认试算') + '，股票占比 ' +
+    return (p.parameter_source==='manual'?'Manual trial':'Default trial') + ', stock weight ' +
       (100*p.current_stock_weight).toFixed(1) + '% → ' + (100*p.target_stock_weight).toFixed(1) + '%';
-  return row.rule;
+  return 'See the recorded operation';
 }
 
-export function RiskScore({scores, visibleEvents,title='客户风险意愿分'}) {
+export function RiskScore({scores, title, sourceNumbers, onOpenEvent}) {
   if (!scores?.length) return null;
-  return <section className="risk-score" aria-label={title}>
+  return <section className="audit-score" aria-label={title}>
     <h4>{title}</h4>
-    {scores.map(card=><div key={JSON.stringify(card.scope)}>
-      <p><strong>{scopeName(card.scope)} · {card.score == null
-        ? (card.status==='conflict'?'证据有分歧，等待核对':'证据不足，暂不出分')
-        : (card.evidence.some(row=>row.legacy_text)?'旧证据试算 ':'') + card.score.toFixed(1) + ' / 100'}</strong>　{card.evidence.length} 组计分依据</p>
-      {card.score!=null && <><meter aria-label="风险意愿指数" min="0" max="100" value={card.score}/>
-        <p>{hypotheses.map(([k,title])=>title+'支持 '+(100*card.support[k]).toFixed(1)+'%').join('　')}</p></>}
-      {card.evidence.some(row=>row.legacy_text) && <p>含旧版文本分类，建议核对原话后再采用这个分数。</p>}
-      <details><summary>查看判据和逐条复算</summary>
-        <p>先核实说的是哪位客户、哪段时间，以及是事实、假设还是否定。明确风险意愿或明确收益与风险取舍，可成为强依据。行为暗示较弱。资金需求、投资目标、单纯查询保留在客户资料中，单独出现时计分贡献为零。</p>
-        <p>初始支持（保守、均衡、较高风险）为 {hypotheses.map(([k])=>(100*card.prior[k]).toFixed(1)+'%').join(' / ')}。每一步分别乘以对应系数，再除以三项之和。风险意愿分 = 50 × 均衡支持 + 100 × 较高风险支持（支持取 0 至 1）。</p>
-        <p>同一范围和维度每组只取最强证据。等强且方向相反时该组待核实。较新的明确声明替代旧声明。默认试算最多计入最近 {card.default_group_limit ?? '若干'} 组。以下用当前有效证据按时间复算，系数来自原型规则 {card.rule_version}。</p>
-        <ol>{card.evidence.map(row=><li key={row.event_id + ':' + row.revision}>
-          <strong>{evidenceDescription(row)}</strong> · {strengths[row.strength] || row.strength}<br/>
-          {criteria[row.criterion] || (row.legacy_text?'旧版语义分类，缺少判据字段':'试算目标与当时股票敞口比较')}
-          {row.interpretation && <span> · 模型解读「{row.interpretation}」</span>}<br/>
-          三项系数 {row.multipliers.map(v=>Number(v.toFixed(4))).join(' / ')} → 累计 {row.running_score.toFixed(1)} 分
-          <span>。仅去掉这一组系数，其余计分依据固定时为 {row.score_without_this_factor?.toFixed(1) ?? '暂无分数'}。</span>
-          <small> · 来源 {visibleEvents?.has(row.event_id)
-            ? <a href={'#learning-event-'+encodeURIComponent(row.event_id)}>查看原始记录</a> : row.event_id}（修订 {row.revision}）</small>
-        </li>)}</ol>
-      </details>
-    </div>)}
-    <p>分数越高，已有证据越支持承担波动。支持度为规则权重归一化的结果。刻度和系数尚待用独立客户测评校准，客户承担损失的财务能力仍需单独核实。</p>
+    {scores.map(card=>{
+      const evidence = card.evidence ?? [];
+      const hasScore = Number.isFinite(card.score);
+      const softConflict = card.conflicts?.length>0 && card.conflicts.every(kind=>exploratory.has(kind));
+      const legacy = evidence.some(row=>row.legacy_text);
+      return <div className="audit-score-scope" key={JSON.stringify(card.scope)}>
+        <div className="audit-score-meta"><span>{scopeName(card.scope)}</span><span>{evidence.length} evidence items</span></div>
+        <p className={card.status==='conflict' ? 'audit-review-label' : undefined}>
+          {hasScore ? <><strong>{card.score.toFixed(1)} / 100</strong> · {legacy ? 'Prototype score with older classifications' : 'Prototype score'}</>
+            : card.status==='conflict' ? (softConflict ? 'Exploratory cues need review. Prototype score withheld.' : 'Conflicting evidence. Prototype score withheld.')
+            : 'A prototype score will appear when evidence is available.'}
+        </p>
+        {(evidence.length>0 || hasScore) && <details>
+          <summary>View criteria and calculation</summary>
+          {hasScore && <dl className="audit-support">{hypotheses.map(([key,name])=><div key={key}>
+            <dt>{name} support</dt><dd>{support(card.support?.[key])}</dd>
+          </div>)}</dl>}
+          {legacy && <p>Some records used an older text classification. Review the original wording.</p>}
+          {evidence.length>0 && <ol className="audit-ledger">{evidence.map((row,i)=><li key={row.signal_id ?? i}>
+            <strong>{evidenceDescription(row)}</strong>
+            <p>{[strengths[row.strength], criteria[row.criterion] ||
+              (row.legacy_text?'Older text classification':'Compared with stock exposure at the time')].filter(Boolean).join(' · ')}</p>
+            {row.interpretation && <p>Interpretation: “{englishText(row.interpretation)}”</p>}
+            <p>Weights (conservative / balanced / higher risk): {row.multipliers?.map(v=>Number.isFinite(v) ? Number(v.toFixed(4)) : '—').join(' / ')}
+              {Number.isFinite(row.running_score) && <> · Score through this item: {row.running_score.toFixed(1)}</>}
+            </p>
+            {Number.isFinite(row.score_without_this_factor) && <p>Without this weight, the score would be {row.score_without_this_factor.toFixed(1)}, holding the other evidence fixed.</p>}
+            {row.event_id && <small><OperationLink eventId={row.event_id} number={sourceNumbers?.[row.event_id]}
+              onOpenEvent={onOpenEvent}/>{row.revision!=null && <> · Revision {row.revision}</>}</small>}
+          </li>)}</ol>}
+          <details className="audit-method"><summary>View calculation rules</summary>
+            <p>Each group contributes its strongest evidence for a given scope and preference. Equally strong opposing signals need review. A newer explicit statement replaces the older statement in the same scope. {card.default_group_limit!=null && <>Only the most recent {card.default_group_limit} groups of default trials can contribute.</>}</p>
+            <p>Explicit statements and risk-return trade-offs are usually stronger evidence. Cash needs, investment goals, and simple lookups contribute zero on their own.</p>
+            <p>Initial support (conservative / balanced / higher risk): {hypotheses.map(([key])=>support(card.prior?.[key])).join(' / ')}.
+              At each step, multiply by the matching weights, then divide by the sum of all three values. Prototype score = 50 × balanced support + 100 × higher-risk support (on a 0-to-1 support scale).</p>
+            {card.rule_version && <small>Rule version {card.rule_version}</small>}
+          </details>
+        </details>}
+      </div>;
+    })}
   </section>;
 }

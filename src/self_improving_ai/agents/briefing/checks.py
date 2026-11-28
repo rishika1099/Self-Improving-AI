@@ -3,6 +3,7 @@
 from pydantic import ValidationError
 
 from self_improving_ai.agents.briefing.workflow_models import AgentWork
+from self_improving_ai.display_language import contains_non_latin_text
 from self_improving_ai.tools.briefing.calculator import calculate
 
 SECTION_IDS = {"overview", "changes", "portfolio", "priorities", "actions", "confirm"}
@@ -25,6 +26,8 @@ def check_work(work: dict, evidence: dict, calculations: list[dict]) -> dict:
     except ValidationError as exc:
         return {"verdict": "revise", "findings": [{"code": "SCHEMA", "severity": "blocking",
                 "location": "work", "reason": str(exc)}], "reviewer": "objective_rules"}
+    if contains_non_latin_text(parsed.model_dump()):
+        flag("OUTPUT_LANGUAGE", "work", "Write the generated brief in English and cite original evidence by ID.")
     sources = {s["id"]: s for s in evidence["sources"]}
     if any(s.get("client_id") != evidence["client_id"] for s in sources.values()):
         flag("CLIENT_MISMATCH", "sources", "Source belongs to a different client")

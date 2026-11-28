@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     # Independent A selection; connection settings do not change B/C defaults.
     portfolio_model: str = DEFAULT_MODEL
+    portfolio_work_timezone: str = "America/New_York"
 
     # Paths
     data_dir: Path = _PROJECT_ROOT / "data"

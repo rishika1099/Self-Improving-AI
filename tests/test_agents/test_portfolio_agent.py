@@ -66,6 +66,14 @@ async def test_empty_response_is_not_reported_as_success(text):
 
 
 @pytest.mark.asyncio
+async def test_portfolio_agent_rejects_an_untranslated_reply():
+    run = await run_portfolio_agent("Calculate the allocation", model=EmptyModel(text="分析结果如下"))
+    assert run["status"] == "error" and run["response"] == ""
+    assert run["result"]["error"]["code"] == "MODEL_LANGUAGE_MISMATCH"
+    assert run["result"]["error"]["retryable"]
+
+
+@pytest.mark.asyncio
 async def test_setup_failure_is_structured_and_does_not_expose_details(monkeypatch):
     from self_improving_ai.agents.portfolio import agent
     def broken_factory(*args):

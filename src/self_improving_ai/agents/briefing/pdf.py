@@ -9,6 +9,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import BaseDocTemplate, Frame, FrameBreak, PageTemplate, Paragraph, Spacer
 
 from self_improving_ai.agents.briefing.schemas import BriefExportRequest
+from self_improving_ai.display_language import contains_non_latin_text
 
 
 def render_brief_pdf(request: BriefExportRequest) -> bytes:
@@ -32,12 +33,16 @@ def render_brief_pdf(request: BriefExportRequest) -> bytes:
 
     def paragraph(text, style="body"):
         # Escape advisor content before passing it to ReportLab's markup parser.
+        if contains_non_latin_text(text):
+            text = "Original-language text retained in the source record."
         text = text.replace("\u2014", " - ").replace("\u2013", "-").replace("\u00b7", " | ")
         return Paragraph(escape(text).replace("\n", "<br/>"), styles[style])
 
     status = "Marked reviewed in this browser" if request.reviewed_at else "DRAFT - NOT REVIEWED"
-    header = [paragraph(brief.client_name + " | Meeting Brief", "name"),
-              paragraph(f"{brief.contact} | {brief.meeting_date} at {brief.meeting_time.strftime('%H:%M')} | New York", "meta"),
+    client_name = brief.client_id if contains_non_latin_text(brief.client_name) else brief.client_name
+    contact = "Client contact" if contains_non_latin_text(brief.contact) else brief.contact
+    header = [paragraph(client_name + " | Meeting Brief", "name"),
+              paragraph(f"{contact} | {brief.meeting_date} at {brief.meeting_time.strftime('%H:%M')} | New York", "meta"),
               paragraph(brief.focus, "focus"),
               paragraph(f"{status} | Revision {request.revision}" + (" | Advisor edited" if request.edited else ""), "meta")]
     header_height = sum(item.wrap(width - margin * 2, height)[1] for item in header) + 22
@@ -59,7 +64,7 @@ def render_brief_pdf(request: BriefExportRequest) -> bytes:
         canvas.drawRightString(width - margin, 24, f"Page {document.page}")
         canvas.restoreState()
 
-    document = BaseDocTemplate(stream, pagesize=A4, title=f"{brief.client_name} - Meeting Brief", author="Wealth Management Copilot")
+    document = BaseDocTemplate(stream, pagesize=A4, title=f"{client_name} - Meeting Brief", author="Wealth Management Copilot")
     frames = [Frame(margin, bottom, column_width, frame_height, leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0),
               Frame(margin + column_width + gap, bottom, column_width, frame_height, leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)]
     document.addPageTemplates(PageTemplate(id="brief", frames=frames, onPage=decorate))

@@ -4,10 +4,11 @@ import json
 import re
 import unicodedata
 from .prompts import CLAUSE_INDEX_VERSIONS, PROMPT_VERSION
-from .parser import ParseError, ParsePacket, numbered_excerpts
+from .parser import ParseError, ParsePacket, RISK_BASES, numbered_excerpts
 from .schemas import DIMENSIONS, canonical, event_scope, issue, normalize_scope, validate_event
 
-CUE_TOPICS = {"liquidity", "income_goal", "capital_preservation", "leverage", "risk_change", "adjustment_pace", "other"}
+CUE_TOPICS = {"liquidity", "income_goal", "return_priority", "loss_reaction", "capital_preservation",
+              "leverage", "risk_change", "adjustment_pace", "other"}
 TASK_TOPICS = {"risk": "risk", "holdings": "holdings", "projection": "projection",
                "quote": "quote", "history": "history"}
 
@@ -175,13 +176,22 @@ def extract_signals(event, parse_text=None):
                 lower = target < current
                 make("TRIAL", "risk_tilt", "allocation_exploration", "medium",
                      "manual_lower_equity" if lower else "manual_raise_equity",
-                     "conservative" if lower else "growth", item["reason"], **extra,
+                     "conservative" if lower else "growth", item["reason"],
+                     **{**extra, "scope": verified_trial_scope(event, item)},
                      risk_basis="stock_target_inquiry", semantic_reason=item["reason"],
                      basis={"current_stock_weight": current, "target_stock_weight": target,
                             "parameter_source": "manual", "exposure_scale": exposure_scale(event, current, target)})
+            else:
+                make("REVIEW", "attention", "unverified_target", "none", "attention_only", evidence,
+                     "The request and the executed stock target do not identify a single verified choice.", **extra)
         if dim == "risk_tilt":
             basis = item.get("risk_basis")
-            extra.update(risk_basis=basis, semantic_reason=item["reason"], prompt_version=parser.get("prompt_version"))
+            extra.update(risk_basis=basis, risk_intensity=item.get("risk_intensity"), semantic_reason=item["reason"],
+                         prompt_version=parser.get("prompt_version"))
+            if basis == "directed_inquiry" and (event["entry_point"] == "advisor_note" or topic in {"liquidity", "income_goal"}):
+                make("ATTENTION","attention","unscored_observation","none","attention_only",evidence,
+                     "A goal or note alone does not verify a directional portfolio inquiry.", **extra)
+                continue
             if (basis == "directed_inquiry" and assertion == "affirmed" and item.get("risk_direction") is not None
                     and inquiry_direction != value):
                 make("REVIEW","attention","uninterpreted_excerpt","none","attention_only",evidence,
@@ -189,7 +199,7 @@ def extract_signals(event, parse_text=None):
                 issues.append(issue("incomplete_coverage","Risk direction requires review."))
                 continue
             if (parser.get("prompt_version") == PROMPT_VERSION or basis is not None) and assertion == "affirmed":
-                if basis in {"observed_risk_choice", "directed_inquiry"}:
+                if basis in {"observed_risk_choice", "directed_inquiry", "allocation_intent", "current_risk_attitude"}:
                     kind = "behavioral_hint"
                 elif basis not in {"declared_attitude", "risk_return_tradeoff"}:
                     make("ATTENTION", "attention", "unscored_observation", "none", "attention_only",
@@ -262,11 +272,61 @@ def mentioned_percentages(excerpt):
     return amounts
 
 
+def stock_targets_in(text):
+    """Bind labeled percentages to their asset before considering the executed target."""
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    clauses = re.split(r"[,;。；、!?！？\n]|\b(?:and|or|versus|vs\.?)\b|和|以及|还是|或者", normalized)
+    targets = set()
+    for clause in clauses:
+        transition = re.search(r"(?:从|\bfrom\b).+?(?:调(?:整)?(?:至|到)|改(?:为|到)|降(?:至|到)|升(?:至|到)|\bto\b)", clause)
+        if transition:
+            clause = clause[transition.end():]
+        elif (re.search(r"目前|当前|现有|\bcurrent(?:ly)?\b", clause)
+              and not re.search(r"调|目标|改|试算|\b(?:target|to|test)\b", clause)):
+            continue
+        amounts = mentioned_percentages(clause)
+        if not amounts:
+            continue
+        if re.search(r"\d\s*[/：:]\s*\d", clause):
+            targets.update(amounts)  # The ratio parser already handles bonds-first labels.
+            continue
+        stocks = re.search(r"股票|权益|股权|\bstocks?\b|\bequit(?:y|ies)\b", clause)
+        bonds = re.search(r"债券|固收|\bbonds?\b", clause)
+        if stocks and bonds:
+            return set()  # Multiple assets with no unique amount-to-asset binding.
+        if not stocks and not bonds and re.search(r"收益|回撤|波动|费用|税率|return|drawdown|volatility|fee", clause):
+            continue
+        targets.update(round(100 - p, 9) if bonds else p for p in amounts)
+    return targets
+
+
+def verified_trial_scope(event, item):
+    scope = dict(item.get("scope") or {})
+    if (event_scope(event) or {}).get("applicability") == "current":
+        return scope
+    text = unicodedata.normalize("NFKC", event["user_text"]).lower()
+    if re.search(r"演练|临时|仅.{0,4}(?:本次|本轮|这次)|只.{0,4}(?:本次|本轮|这次)|"
+                 r"不要.{0,6}(?:记录|记入|长期)|(?:这次|本次|本轮).{0,5}(?:而已|专用|有效)|"
+                 r"\b(?:one.off|hypothetical|only (?:for )?this (?:analysis|round|time)|this (?:analysis|round|time) only)\b", text):
+        return {**scope, "applicability":"current", "analysis_id":event["evidence_group_id"]}
+    if item.get("scope_quote"):
+        return {**scope, "applicability":"current", "analysis_id":event["evidence_group_id"]}
+    if scope.get("applicability") == "current" and item.get("scope_quote") == "":
+        # A verified operation describes exploration. A temporary modifier must be
+        # supported separately. Missing fields from older parsers retain their scope.
+        scope.pop("applicability", None)
+        scope.pop("analysis_id", None)
+    return scope or None
+
+
 def verified_chat_target(event, item):
     percent = item.get("stock_target_pct")
     if type(percent) not in (float, int) or not 0 <= percent <= 100:
         return None
-    if percent not in mentioned_percentages(item["evidence_text"]):
+    if stock_targets_in(item["evidence_text"]) != {percent}:
+        return None
+    original = event.get("user_text", item["evidence_text"])
+    if len(stock_targets_in(original)) > 1:
         return None
     target = percent / 100
     matches = set()
@@ -285,15 +345,25 @@ def verified_chat_target(event, item):
             current, executed = result.get("weights", {}).get("stock"), comp.get("weights", {}).get("stock")
         else:
             continue
-        if type(current) in (int,float) and type(executed) in (int,float) and abs(executed-target) < 1e-9 and abs(current-target) > 1e-9:
-            matches.add((current, target))
-    return next(iter(matches)) if len(matches) == 1 else None
+        if type(current) in (int,float) and type(executed) in (int,float):
+            matches.add((current, executed))
+    if len(matches) == 1:
+        current, executed = matches.pop()
+        if abs(executed-target) < 1e-9 and abs(current-target) > 1e-9:
+            return current, target
+    return None
 
 
 def _validate_text(raw, event, prompt_version=None):
     if not isinstance(raw, dict):
         raise ValueError("Each semantic signal must be an object.")
-    i = {k: raw.get(k) for k in ("kind","dimension","value","assertion","scope","evidence_text","reason","target_event_id","risk_basis","stock_target_pct","client_topic","risk_direction")}
+    i = {k: raw.get(k) for k in ("kind","dimension","value","assertion","scope","evidence_text","reason","target_event_id","risk_basis","stock_target_pct","client_topic","risk_direction","scope_quote","risk_intensity")}
+    if i["risk_intensity"] not in (None, "mild", "moderate", "strong"):
+        raise ValueError("Invalid intensity for a risk declaration.")
+    if prompt_version == PROMPT_VERSION and i["risk_basis"] not in (None, *RISK_BASES):
+        raise ValueError("Unsupported basis for a risk signal.")
+    if i["scope_quote"] is not None and (not isinstance(i["scope_quote"], str) or i["scope_quote"] not in event["user_text"]):
+        raise ValueError("Scope restrictions must quote the original request.")
     kind, dim, val, assertion, evidence = (i[k] for k in ("kind","dimension","value","assertion","evidence_text"))
     if any(i[key] is not None and not isinstance(i[key], str) for key in ("risk_basis","client_topic","risk_direction")):
         raise ValueError("The risk basis and client topic must be text.")

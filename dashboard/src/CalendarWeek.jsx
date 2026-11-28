@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from "react";
+import {englishText} from "./displayLanguage";
 import { CalendarSymbol, dayLabel, minuteOfDay } from "./calendarFormat";
 import { arrangeDay, timeBounds } from "./calendarLayout";
 import { preparationState } from "./calendarWorkflow";
@@ -40,8 +41,8 @@ export default function CalendarWeek({ days, events, now, selected, onSelect, on
               const status = preparedEvent && preparationState(data, preparedEvent);
               const duration = ends - begins;
               return <article key={event.id} className={`cal-event-entry${duration < 60 ? " is-compact" : ""}${duration < 30 ? " is-short" : ""}`} style={{ top: (begins - start * 60) / 60 * HOUR_HEIGHT + 1, height: Math.max(22, duration / 60 * HOUR_HEIGHT - 2), left: `calc(${lane / columns * 100}% + 4px)`, width: `calc(${100 / columns}% - 8px)` }}>
-                <button className="cal-event-chip" title={`${event.start_time}–${event.end_time} ${event.title}`} aria-label={`Edit event: ${event.title}, ${event.date} at ${event.start_time}`} onClick={() => onEdit(event)}>
-                  <strong>{clientMap[event.client_id] || event.title}</strong><span className="cal-event-time">{event.start_time} – {event.end_time}</span><span className="cal-event-topic">{event.title}</span>
+                <button className="cal-event-chip" title={`${event.start_time}–${event.end_time} ${englishText(event.title)}`} aria-label={`Edit event: ${englishText(event.title)}, ${event.date} at ${event.start_time}`} onClick={() => onEdit(event)}>
+                  <strong>{englishText(clientMap[event.client_id] || event.title,event.client_id)}</strong><span className="cal-event-time">{event.start_time} – {event.end_time}</span><span className="cal-event-topic">{englishText(event.title)}</span>
                 </button>
                 <button className="cal-prep-link" disabled={!preparedEvent} aria-label={`View meeting prep for ${clientMap[event.client_id] || event.client_id} on ${event.date}`} onClick={() => onPrepare(event)}>
                   <span>{status?.tone === "ready" ? "Brief ready" : status?.tone === "reviewed" ? "Reviewed" : "Meeting prep"}</span><CalendarSymbol name={status?.tone === "ready" ? "check" : "next"} size={12}/>

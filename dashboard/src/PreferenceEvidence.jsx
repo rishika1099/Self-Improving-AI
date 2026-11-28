@@ -1,66 +1,110 @@
 import React from 'react';
 import {scopeName} from './RiskScore';
+import {englishText, englishJson} from './displayLanguage';
 
-const names = {risk_tilt:'风险倾向',adjustment_style:'调整方式',conservative:'保守',balanced:'均衡',
-  growth:'偏向较高风险',gradual:'分阶段调整',flexible:'可接受一次较大调整',liquidity:'近期用钱需求',
-  income_goal:'收入目标',capital_preservation:'本金保障目标',leverage:'杠杆使用习惯',risk_change:'风险态度变化',
-  adjustment_pace:'调整节奏',other:'客户说明',risk:'风险与收益',holdings:'持仓构成',projection:'目标预测',
-  quote:'报价',history:'历史价格',constraint:'明确约束',budget:'预算',restricted_funds:'受限资金',
-  max_loss_limit:'损失限制',maximum_loss_limit:'最大损失限制',adopted_target_allocation:'已接受的目标配置'};
+const names = {risk_tilt:'Risk preference',adjustment_style:'Adjustment style',conservative:'Conservative',balanced:'Balanced',
+  growth:'Growth-oriented',gradual:'Phase changes in',flexible:'Open to one larger adjustment',liquidity:'Near-term cash need',
+  income_goal:'Income goal',return_priority:'Return objective',loss_reaction:'Reaction to a loss',capital_preservation:'Principal preservation objective',leverage:'Use of leverage',risk_change:'Change in risk attitude',
+  adjustment_pace:'Adjustment pace',other:'Client note',risk:'Risk and return',holdings:'Holdings',projection:'Goal projection',
+  quote:'Quote',history:'Price history',constraint:'Explicit constraint',budget:'Budget',restricted_funds:'Restricted funds',
+  max_loss_limit:'Loss limit',maximum_loss_limit:'Maximum loss limit',adopted_target_allocation:'Accepted target allocation'};
 const label = value => typeof value === 'string' && Object.hasOwn(names,value) ? names[value] :
-  (typeof value === 'string' ? value : JSON.stringify(value ?? '待核实'));
+  (typeof value === 'string' ? englishText(value) : englishJson(value ?? 'Needs verification'));
+export {label as evidenceLabel};
 const pct = value => (value * 100).toFixed(1) + '%';
+const scoreFormat = new Intl.NumberFormat('en-US', {minimumFractionDigits:1,maximumFractionDigits:2});
+const scoreParts = {anchor:'Long-term baseline',trial_points:'Allocation trial',behavior_points:'Directional actions',current_points:'Recent attitude'};
+const delta = value => (value>0?'+':'')+scoreFormat.format(Math.abs(value)<1e-9?0:value);
+
+export function OperationScore({row}) {
+  const effects=row.score_effects || [];
+  if (!effects.length) {
+    const message=row.delivery_status==='pending'?'Waiting for the learning module':
+      row.delivery_status==='superseded'?'This revision did not contribute':'No score impact to recalculate';
+    return <p className="operation-score">{row.kind==='retract'?'Withdrawal impact':'Score impact'} · {message}</p>;
+  }
+  const important=effects.filter(effect=>effect.revision>2 || effect.changes.some(change=>
+    Math.abs(change.effective[1]-change.effective[0])>=1e-9 || Object.keys(change.components).length));
+  return <div className="operation-score">
+    {(important.length?important:[effects.at(-1)]).map(effect=>{
+      const action=effect.kind==='retract'?'Withdrawal':effect.revision>2?'Reinterpreted':effect.revision===1?'First processing':'This operation';
+      return <div key={effect.revision}>
+        {effect.changes.map(change=>{
+          const [before,after]=change.effective;
+          const [systemBefore,systemAfter]=change.reference;
+          const movement=after-before;
+          return <div className="operation-score-change" key={JSON.stringify(change.scope)}>
+            <p>{action} · {scopeName(change.scope)}{change.scope?' applied score':' applied score'} <strong>
+              {scoreFormat.format(before)} → {scoreFormat.format(after)} ({Math.abs(movement)<1e-9?'0 points':
+                Math.abs(movement)<.005?(movement>0?'up less than 0.01 points':'down less than 0.01 points'):delta(movement)+' points'})</strong></p>
+            {(before!==systemBefore || after!==systemAfter) && <p>System score {scoreFormat.format(systemBefore)}
+              {' → '+scoreFormat.format(systemAfter)+' ('+delta(systemAfter-systemBefore)+' points)'}</p>}
+            {Object.keys(change.components).length>0 && <p>{Object.entries(change.components)
+              .map(([key,value])=>scoreParts[key]+' '+delta(value)+' points').join(' · ')}</p>}
+          </div>;
+        })}
+      </div>;
+    })}
+    {row.delivery_status==='pending' && <p>This update is still pending.</p>}
+  </div>;
+}
 
 export function describeEvidence(item) {
   if (typeof item === 'string') return label(item);
-  if (!item) return '待核实';
+  if (!item) return 'Needs verification';
   if (item.probabilities) {
     const entries = Object.entries(item.probabilities).filter(([,v])=>Number.isFinite(v)).sort((a,b)=>b[1]-a[1]);
     if (!entries.length) return label(item.field);
     const leading = entries.filter(([,v])=>Math.abs(v-entries[0][1])<1e-9);
-    const direction = leading.length===1 ? label(entries[0][0]) + ' 支持度 ' + pct(entries[0][1]) : '证据尚无单一方向';
+    const direction = leading.length===1 ? label(entries[0][0]) + ' support ' + pct(entries[0][1]) : 'No single direction is supported';
     const source = item.sources?.at(-1);
-    const basis = source?.quote || (Number.isFinite(source?.basis?.target_stock_weight) ?
-      '试算股票目标 ' + pct(source.basis.target_stock_weight) : '');
-    return label(item.field) + ' · ' + direction + (basis ? '，依据「' + basis + '」' : '');
+    const basis = englishText(source?.quote) || (Number.isFinite(source?.basis?.target_stock_weight) ?
+      'Stock target tested: ' + pct(source.basis.target_stock_weight) : '');
+    return label(item.field) + ' · ' + direction + (basis ? ', based on “' + basis + '”' : '');
   }
   if (item.kind === 'calculation_topic') {
     const basis = item.basis || {};
-    const detail = Number.isFinite(basis.annual_volatility) ? '，本次组合年化波动率 ' + pct(basis.annual_volatility) :
+    const detail = Number.isFinite(basis.annual_volatility) ? ', annualized portfolio volatility ' + pct(basis.annual_volatility) :
       (basis.symbol ? ' · ' + basis.symbol : '');
-    const fields = {target_amount:'目标金额',years:'期限（年）',annual_contribution:'年度投入',annual_withdrawal:'年度提款'};
+    const fields = {target_amount:'Goal amount',years:'Horizon (years)',annual_contribution:'Annual contribution',annual_withdrawal:'Annual withdrawal'};
     const manual = Object.entries(basis.manual_parameters || {}).filter(([k])=>Object.hasOwn(fields,k))
-      .map(([k,v])=>fields[k] + ' ' + v).join('、');
-    return '关注' + label(item.value) + detail + (manual ? '，本次手动试算 ' + manual : '');
+      .map(([k,v])=>fields[k] + ' ' + v).join(', ');
+    return 'Reviewed ' + label(item.value) + detail + (manual ? ', manual inputs: ' + manual : '');
   }
-  if (['client_cue','constraint','behavioral_hint'].includes(item.kind)) return label(item.value) + ' · ' + item.evidence_text;
-  if (Number.isFinite(item.target_stock_weight)) return '试算过股票 ' + pct(item.target_stock_weight) + ' 的情景';
+  if (['client_cue','constraint','behavioral_hint'].includes(item.kind)) return label(item.value) + ' · ' + englishText(item.evidence_text);
+  if (Number.isFinite(item.target_stock_weight)) return 'Tested ' + pct(item.target_stock_weight) + ' stock weight';
   if (['hypothetical','negated','uncertain'].includes(item.kind))
-    return ({hypothetical:'假设场景',negated:'否定表述',uncertain:'尚待确认'}[item.kind]) + ' · ' + item.evidence_text;
+    return ({hypothetical:'Hypothetical scenario',negated:'Denied statement',uncertain:'Unconfirmed'}[item.kind]) + ' · ' + englishText(item.evidence_text);
   if (item.field) return label(item.field) + ' · ' + label(item.value);
-  return item.evidence_text || label(item.value ?? item.summary ?? item.reason ?? '详情见来源记录');
+  return englishText(item.evidence_text) || label(item.value ?? item.summary ?? item.reason ?? 'See the source record');
 }
 
-export function EventImpact({row,withdrawn}) {
-  if (withdrawn || row.delivery_status !== 'applied') return null;
+export function EventImpact({row,withdrawn,currentIndex}) {
+  if (withdrawn || !['applied','needs_review'].includes(row.delivery_status)) return null;
   const extraction = row.update?.extraction;
   if (!extraction) return null;
   const signals = extraction.signals || [];
-  if (!signals.length) return <p>本条已处理，未提取出客户线索，未新增计分依据。</p>;
+  if (!signals.length) return <p>{row.delivery_status==='needs_review'?'This wording needs review. No usable cue was found yet.':'Processed. No client cue or scoring evidence was found.'}</p>;
   const applied = new Set(row.update.applied || []);
+  const counted=currentIndex?.scoring_event_ids?.includes(row.event_id);
   return <><ul>{signals.map(s=>{
     let explanation;
-    if (!applied.has(s.signal_id)) explanation = '本条在本次更新中未单独计权';
-    else if (s.kind === 'behavioral_hint' || s.kind === 'allocation_exploration')
-      explanation = '暂定方向 · ' + label(s.dimension) + ' / ' + label(s.value) + (s.strength==='medium'?'（中等证据）':'（弱证据）');
-    else if (s.kind === 'explicit_statement' || s.kind === 'preference_change') explanation = '团队说明 · ' + label(s.value);
+    if (s.kind==='allocation_exploration' && currentIndex?.policy>=2)
+      explanation='Allocation trial · '+label(s.value)+' direction. '+(counted?'Included in the current score, subject to the daily cap.':'No separate contribution to the current score.');
+    else if (!applied.has(s.signal_id)) explanation = 'No separate weight in the original classification';
+    else if (s.kind === 'allocation_exploration')
+      explanation='Allocation trial · '+label(s.value)+' direction. In the same round, a manual trial contributes at most 2 points and a default trial at most 0.25 points.';
+    else if (s.kind === 'behavioral_hint')
+      explanation = 'Tentative direction · ' + label(s.dimension) + ' / ' + label(s.value) + (s.strength==='medium'?' (moderate evidence)':' (weak evidence)');
+    else if (s.kind === 'explicit_statement' || s.kind === 'preference_change') explanation = 'Advisor statement · ' + label(s.value);
     else explanation = describeEvidence(s);
-    if (s.kind==='client_cue' && s.reason) explanation += '。提取理由：' + s.reason;
-    if (s.kind==='uninterpreted_excerpt') explanation='这部分尚未解读，已保留原话：'+s.evidence_text;
+    if (s.kind==='client_cue' && s.reason) explanation += '. Interpretation: ' + englishText(s.reason);
+    if (s.kind==='uninterpreted_excerpt') explanation='This part still needs interpretation. Original text: '+englishText(s.evidence_text);
+    if (s.kind==='unverified_target') explanation='No single directional change in stock exposure was verified. This trial earned no directional points. Original text: '+englishText(s.evidence_text);
     return <li key={s.signal_id}>{explanation}</li>;
-  })}</ul>{row.update.risk_score_changes?.length ? row.update.risk_score_changes.map(change=><p key={JSON.stringify(change.scope)}>
-      历史综合证据分（含说明，{scopeName(change.scope)}） {change.before?.toFixed(1) ?? '暂无分数'} → {change.after?.toFixed(1) ?? '暂无分数'}
-    </p>) : !signals.some(s=>s.dimension==='risk_tilt') && <p>对风险意愿分的直接贡献为 0。</p>}</>;
+  })}</ul>{counted && <p>This operation contributes to the current score for {scopeName(currentIndex.scope)}.</p>}{row.update.risk_score_changes?.length ? <details><summary>View the earlier evidence support</summary>{row.update.risk_score_changes.map(change=><p key={JSON.stringify(change.scope)}>
+      Historical evidence score including notes ({scopeName(change.scope)}) {change.before?.toFixed(1) ?? 'No score'} → {change.after?.toFixed(1) ?? 'No score'}
+    </p>)}</details> : !counted && !signals.some(s=>s.dimension==='risk_tilt') && <p>Direct contribution to the risk willingness score: 0.</p>}</>;
 }
 
 export function RiskInterpretation({result,snapshot,onFollowUp}) {
@@ -70,6 +114,8 @@ export function RiskInterpretation({result,snapshot,onFollowUp}) {
   const cues=context?.client_cues || [];
   const liquidity=cues.findLast(row=>row.value==='liquidity');
   const income=cues.findLast(row=>row.value==='income_goal');
+  const returns=cues.findLast(row=>row.value==='return_priority');
+  const lossReaction=cues.findLast(row=>row.value==='loss_reaction');
   const protect=cues.findLast(row=>row.value==='capital_preservation');
   const riskChange=cues.findLast(row=>row.value==='risk_change' || (row.kind==='behavioral_hint' && row.dimension==='risk_tilt'));
   const leverage=cues.findLast(row=>row.value==='leverage');
@@ -78,40 +124,43 @@ export function RiskInterpretation({result,snapshot,onFollowUp}) {
     cues.findLast(row=>row.value==='adjustment_pace' || (row.kind==='behavioral_hint' && row.dimension==='adjustment_style'));
   const constraints=context?.explicit_constraints || [];
   const nextTask = liquidity || income ? 'projection' : 'allocation';
-  const emphasis = {conservative:'先看波动与本金承受能力，再看预期收益。',growth:'核对为争取收益而承担的波动是否在客户可接受范围内。',balanced:'把预期收益与波动放在一起，核对客户愿意承担的取舍。'};
+  const emphasis = {conservative:'Start with volatility and the client’s capacity for loss, then review expected return.',growth:'Confirm whether the client can accept the volatility that comes with seeking higher returns.',balanced:'Discuss expected return and volatility together to understand the client’s trade-off.'};
   const comparison = result.scenario_comparison;
   const general = context?.risk_preference_scores?.find(s=>!s.scope);
   const working = context?.scoped_risk_index || context?.working_risk_index;
-  return <section aria-label="结合客户信息解读风险"><h4>这次风险计算怎么用</h4>
-    <p>按当前持仓和草稿假设，组合年化波动率为 {pct(result.annual_volatility)}。这个指标描述组合收益的波动程度。</p>
+  return <section aria-label="Risk interpretation using client context"><h4>How to use this risk calculation</h4>
+    <p>Annualized portfolio volatility is {pct(result.annual_volatility)} based on the current holdings and draft assumptions. It describes how much portfolio returns vary.</p>
     {comparison?.status==='success' && <div className="risk-comparison">
-      <h4>配置情景比较</h4>
-      <p>{comparison.source==='manual_scenario'?'本次指定情景':'客户整体草稿情景'} · 股票 {(100*comparison.weights.stock).toFixed(1)}%，债券 {(100*comparison.weights.bond).toFixed(1)}%。两列采用相同的股票和债券假设。</p>
-      <table><thead><tr><th>年化指标</th><th>当前持仓</th><th>试算组合</th><th>变化（百分点）</th></tr></thead><tbody>
-        {[['波动率','annual_volatility','volatility_delta_pp'],['预期收益','annual_expected_return','return_delta_pp']].map(([title,key,delta])=>
+      <h4>Allocation comparison</h4>
+      <p>{comparison.source==='manual_scenario'?'Requested allocation':'Saved household draft'} · Stocks {(100*comparison.weights.stock).toFixed(1)}%, bonds {(100*comparison.weights.bond).toFixed(1)}%. Both columns use the same stock and bond assumptions.</p>
+      <div className="portfolio-table" tabIndex={0} role="region" aria-label="Risk and return comparison results"><table><thead><tr><th>Annualized metric</th><th>Current holdings</th><th>Trial portfolio</th><th>Change (pp)</th></tr></thead><tbody>
+        {[['Volatility','annual_volatility','volatility_delta_pp'],['Expected return','annual_expected_return','return_delta_pp']].map(([title,key,delta])=>
           <tr key={key}><th>{title}</th><td>{(result[key]*100).toFixed(2)}%</td><td>{(comparison[key]*100).toFixed(2)}%</td>
             <td>{comparison[delta]>0?'+':''}{comparison[delta].toFixed(2)}</td></tr>)}
-      </tbody></table>
-      {!working && general?.score!=null && <p>客户整体风险意愿分 {general.score.toFixed(1)} / 100{general.evidence.some(e=>e.legacy_text)?'（含待复核的旧分类）':''}。{general.evidence.some(e=>e.legacy_text) ? '先在客户风险意愿分中复核旧原话，再决定重点讨论哪项变化。' : general.support.conservative>Math.max(general.support.balanced,general.support.growth)
-        ? '讨论时先核对两种情景的波动差异，再确认客户能否接受相应的收益变化。'
+      </tbody></table></div>
+      {!working && general?.score!=null && <p>Household risk willingness evidence score {general.score.toFixed(1)} / 100{general.evidence.some(e=>e.legacy_text)?' (includes older classifications that need review)':''}. {general.evidence.some(e=>e.legacy_text) ? 'Review the original statements in Scoring evidence before deciding what to discuss.' : general.support.conservative>Math.max(general.support.balanced,general.support.growth)
+        ? 'Start with the difference in volatility, then confirm what change in expected return the client can accept.'
         : general.support.growth>Math.max(general.support.balanced,general.support.conservative)
-          ? '讨论时先核对两种情景的预期收益差异，再确认客户是否愿意承担相应波动。'
-          : '讨论时一并核对两项变化，向客户确认更看重哪一项。'}</p>}
-      {general?.status==='conflict' && <p>客户风险证据有分歧。先核实原话，再讨论两个情景的取舍。</p>}
+          ? 'Start with the difference in expected return, then confirm whether the client is willing to take on the related volatility.'
+          : 'Discuss both changes and ask the client which matters most.'}</p>}
+      {(working?.status ?? general?.status)==='conflict' && <p>The client’s risk statements conflict. Verify the original wording before discussing the trade-offs.</p>}
     </div>}
-    {!context ? <p>本次未取得可用的客户资料，适配性仍待核实。</p> : <>
-      {risk && general?.status!=='conflict' && !general?.evidence.some(e=>e.legacy_text) && <p>已记录的风险倾向为{label(risk.value)}（依据「{risk.evidence_text}」）。{!working && emphasis[risk.value]}</p>}
-      {!risk && tentative && <p>目前只有暂定线索。{describeEvidence(tentative)}。请先与客户核实可接受的波动。</p>}
-      {!risk && !tentative && working?.effective==null && <p>客户风险倾向尚待了解，可询问其对组合价值起伏的接受程度。</p>}
-      {context.conflicts?.length>0 && <p>资料中有分歧，请在作出适配判断前核实相关原话。</p>}
-      {liquidity && <p>客户提到「{liquidity.evidence_text}」。先确认用款时间和金额，再在 Goal projection 中试算相应提款。</p>}
-      {income && <p>客户提到「{income.evidence_text}」。可核实需要的现金收入。年预期收益并非可提取的现金收入。</p>}
-      {protect && <p>客户提到「{protect.evidence_text}」。还需要确认可接受的损失金额和期限。</p>}
-      {riskChange && <p>最近提到「{riskChange.evidence_text}」。可核实这是短期行为还是长期风险倾向的变化。</p>}
-      {leverage && <p>杠杆使用线索「{leverage.evidence_text}」。这次估算基于股票和债券权重，杠杆暴露需另行核实。</p>}
-      {pace && <p>若继续试算调整方案，可一并核对调整节奏。依据「{pace.evidence_text || describeEvidence(pace)}」。</p>}
-      {constraints.map(item=><p key={item.signal_id}>已记录约束「{item.evidence_text}」。这次股票和债券波动估算未检验该约束是否满足。</p>)}
+    {!context ? <p>Client context was unavailable. Confirm how the results apply to this client.</p> : <>
+      {risk && (working ? working.anchor_source===risk.evidence_text && working.status!=='conflict'
+        : general?.status!=='conflict' && !general?.evidence.some(e=>e.legacy_text)) && <p>The recorded risk preference is {label(risk.value)} (source: “{englishText(risk.evidence_text)}”).{!working && emphasis[risk.value]}</p>}
+      {!risk && tentative && <p>The evidence is tentative. {describeEvidence(tentative)}. Confirm what level of volatility the client can accept.</p>}
+      {!risk && !tentative && (!working || working.status==='insufficient') && <p>The client’s risk preference is still unknown. Ask how comfortable they are with changes in portfolio value.</p>}
+      {context.conflicts?.some(c=>c.dimension!=='risk_tilt' || !working) && <p>The evidence conflicts. Check the original wording.</p>}
+      {liquidity && <p>The client mentioned “{englishText(liquidity.evidence_text)}”. Confirm the amount and timing, then test the withdrawals in Goal projection.</p>}
+      {income && <p>The client mentioned “{englishText(income.evidence_text)}”. Confirm the cash income needed. Expected annual returns do not measure withdrawable cash income.</p>}
+      {returns && <p>Return objective: “{englishText(returns.evidence_text)}”. Ask how much of a portfolio decline the client would accept in pursuit of higher returns.</p>}
+      {lossReaction && <p>Loss reaction: “{englishText(lossReaction.evidence_text)}”. Confirm the actual loss, when the funds are needed, and the drawdown the client can accept.</p>}
+      {protect && <p>The client mentioned “{englishText(protect.evidence_text)}”. Confirm the acceptable loss amount and time horizon.</p>}
+      {riskChange && <p>Recent cue: “{englishText(riskChange.evidence_text)}”. Confirm whether it reflects a temporary response or a change in long-term risk preference.</p>}
+      {leverage && <p>Leverage cue: “{englishText(leverage.evidence_text)}”. This estimate uses stock and bond weights. Verify leveraged exposure separately.</p>}
+      {pace && <p>When comparing adjustments, check the pace the client can accept. Source: “{englishText(pace.evidence_text) || describeEvidence(pace)}”.</p>}
+      {constraints.map(item=><p key={item.signal_id}>Recorded constraint: “{englishText(item.evidence_text)}”. Check it separately from the stock and bond volatility estimate.</p>)}
     </>}
-    <button type="button" onClick={()=>onFollowUp(nextTask)}>{nextTask==='projection'?'试算目标与提款':'查看同一客户的配置偏离'}</button>
+    <button type="button" onClick={()=>onFollowUp(nextTask)}>{nextTask==='projection'?'Model goals and withdrawals':'Review this client’s allocation drift'}</button>
   </section>;
 }

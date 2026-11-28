@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
+import {englishText} from './displayLanguage';
 import "./email.css";
 import { requestJson } from "./connectionRequest";
 
@@ -191,11 +192,11 @@ export default function EmailPage({ clients }) {
               </button>
               <div className="email-item-content">
                 <div className="email-item-top">
-                  <span className="email-item-from">{displayName(email)}</span>
+                  <span className="email-item-from">{englishText(displayName(email))}</span>
                   <span className="email-item-date">{email.date}</span>
                 </div>
-                <div className="email-item-subject">{email.subject}</div>
-                <div className="email-item-preview">{(email.body || "").slice(0, 80)}</div>
+                <div className="email-item-subject">{englishText(email.subject)}</div>
+                <div className="email-item-preview">{englishText(email.body || "").slice(0, 80)}</div>
                 <div className="email-item-tags">
                   <span className={`chip email-cat-${email.category}`} style={{ fontSize: 10 }}>
                     {CATEGORIES[email.category] || email.category}
@@ -218,20 +219,20 @@ export default function EmailPage({ clients }) {
         ) : (
           <>
             <div className="email-detail-header">
-              <div className="email-detail-subject">{detail.subject}</div>
+              <div className="email-detail-subject">{englishText(detail.subject)}</div>
               <div className="email-detail-meta">
                 <div className="email-detail-avatar" style={{ background: avatarColor(detail.from_name) }}>
-                  {initials(detail.from_name)}
+                  {initials(englishText(detail.from_name,"Unknown Sender"))}
                 </div>
                 <div className="email-detail-from-info">
-                  <div className="email-detail-from-name">{detail.from_name}</div>
+                  <div className="email-detail-from-name">{englishText(detail.from_name)}</div>
                   <div className="email-detail-from-addr">&lt;{detail.from_addr}&gt;</div>
                 </div>
                 <div className="email-detail-date">{detail.date} {detail.time}</div>
               </div>
-              <div className="email-detail-to">To: {detail.to_name} &lt;{detail.to_addr}&gt;</div>
+              <div className="email-detail-to">To: {englishText(detail.to_name)} &lt;{detail.to_addr}&gt;</div>
             </div>
-            <div className="email-detail-body">{detail.body}</div>
+            <div className="email-detail-body">{englishText(detail.body)}</div>
             <div className="email-detail-actions">
               {folder !== "sent" && (
                 <button className="email-action-btn primary" onClick={() => openCompose(detail)}>Reply</button>

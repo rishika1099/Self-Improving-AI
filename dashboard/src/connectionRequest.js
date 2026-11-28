@@ -1,4 +1,5 @@
 /** Bounded local requests. Submitted keys are never included in error text. */
+import {englishText} from './displayLanguage';
 export const SETTINGS_TIMEOUT_MS=10000;
 export const CONNECTION_TEST_TIMEOUT_MS=15000;
 
@@ -32,7 +33,8 @@ export async function requestJson(url,options={}) {
       throw new ConnectionRequestError("The local service returned an unreadable response. Try again.");
     }
     if(!response.ok) throw new ConnectionRequestError(typeof data.detail==="string"
-      ? data.detail : "The request could not be completed. Check the input and try again.");
+      ? englishText(data.detail, "The service returned an untranslated error. Try again or check the connection.")
+      : "The request could not be completed. Check the input and try again.");
     return data;
   } catch(error) {
     if(timedOut) throw new ConnectionRequestError(timeoutMessage,"timeout");

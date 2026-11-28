@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import {englishText, englishJson} from './displayLanguage';
 import "./meeting-prep.css";
 import { loadMeetingDraft, saveMeetingDraft } from "./meetingDraftStore";
 import { CalendarSymbol, meetingLabel } from "./calendarFormat";
@@ -126,7 +127,7 @@ export default function MeetingPrep({ incomingBrief, calendarEvent, onBackToCale
         <div><h2>Meeting Prep</h2></div>
       </div>}
 
-      {error && <div className="meeting-message error" role="alert">{error}</div>}
+      {error && <div className="meeting-message error" role="alert">{englishText(error)}</div>}
       {notice && <div className="meeting-message" role="status">{notice}</div>}
 
       {!brief && <div className="meeting-empty card" aria-live="polite">
@@ -136,7 +137,7 @@ export default function MeetingPrep({ incomingBrief, calendarEvent, onBackToCale
       </div>}
 
       {brief && <>
-        {calendarEvent && <section className="meeting-glance no-meeting-print" aria-label="Meeting at a glance"><h3>At a glance</h3><p>{brief.focus}</p><ul>{brief.sections.find(section => section.id === "priorities")?.items.slice(0, 3).map(item => <li key={item.id}>{item.title}</li>)}</ul><a href="#meeting-full-brief">Read the full brief<CalendarSymbol name="next" size={13}/></a></section>}
+        {calendarEvent && <section className="meeting-glance no-meeting-print" aria-label="Meeting at a glance"><h3>At a glance</h3><p>{englishText(brief.focus)}</p><ul>{brief.sections.find(section => section.id === "priorities")?.items.slice(0, 3).map(item => <li key={item.id}>{englishText(item.title)}</li>)}</ul><a href="#meeting-full-brief">Read the full brief<CalendarSymbol name="next" size={13}/></a></section>}
         <div className="meeting-toolbar no-meeting-print">
           <div aria-live="polite"><span className={`chip ${reviewedAt ? "chip-green" : "chip-amber"}`}>{reviewedAt ? "Reviewed" : "Draft · Needs review"}</span><span className="meeting-muted">Revision {revision}{edited ? " · Advisor edited" : ""}</span></div>
           <div className="meeting-actions">
@@ -152,26 +153,26 @@ export default function MeetingPrep({ incomingBrief, calendarEvent, onBackToCale
         {brief.workflow && <details className="card meeting-process no-meeting-print" style={{ padding: 16, marginBottom: 16 }}>
           <summary>Preparation process · {brief.workflow.work.change_status.replaceAll("_", " ")} · {checkFailed ? "Check unavailable · retry required" : quality ? `Check: ${quality.verdict}` : "Edited: recheck required"}</summary>
           <p>{brief.mode === "agent" ? "Gemini agent with an independent model reviewer." : "Deterministic demonstration; not model-reviewed."} Review records are local demo records, without authenticated advisor identity.</p>
-          <p>{brief.workflow.work.context_summary}</p>
-          <ul>{Object.entries(brief.workflow.evidence.coverage).map(([key, value]) => <li key={key}>{key.replaceAll("_", " ")}: {value}</li>)}</ul>
-          {brief.workflow.work.findings.map(finding => <div key={finding.id}><strong>{finding.claim}</strong><p>{finding.rationale} Uncertainty: {finding.uncertainty}</p></div>)}
-          {quality?.findings?.map((finding, index) => <p key={index}>{finding.severity}: {finding.reason}</p>)}
-          <details><summary>Recorded tools and evidence</summary><pre style={{ whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto" }}>{JSON.stringify(brief.workflow.trace, null, 2)}</pre></details>
+          <p>{englishText(brief.workflow.work.context_summary)}</p>
+          {brief.workflow.evidence?.coverage && <ul>{Object.entries(brief.workflow.evidence.coverage).map(([key, value]) => <li key={key}>{key.replaceAll("_", " ")}: {value}</li>)}</ul>}
+          {brief.workflow.work.findings?.map(finding => <div key={finding.id}><strong>{englishText(finding.claim)}</strong><p>{englishText(finding.rationale)} Uncertainty: {englishText(finding.uncertainty)}</p></div>)}
+          {quality?.findings?.map((finding, index) => <p key={index}>{finding.severity}: {englishText(finding.reason)}</p>)}
+          {brief.workflow.trace && <details><summary>Recorded tools and evidence</summary><pre style={{ whiteSpace: "pre-wrap", maxHeight: 300, overflow: "auto" }}>{englishJson(brief.workflow.trace)}</pre></details>}
         </details>}
 
         <div className="meeting-workspace">
           <article id="meeting-full-brief" className="card meeting-sheet" aria-label="Meeting briefing" data-brief-id={brief.id}>
             <header className="meeting-sheet-header">
-              <div className="meeting-sheet-title"><h2>{brief.client_name}</h2><span className="chip chip-violet">Meeting Brief</span></div>
-              <p>{brief.contact} · {brief.meeting_date} at {brief.meeting_time} · New York</p>
-              <div className="meeting-objective">{brief.focus}</div>
+              <div className="meeting-sheet-title"><h2>{englishText(brief.client_name, brief.client_id)}</h2><span className="chip chip-violet">Meeting Brief</span></div>
+              <p>{englishText(brief.contact)} · {brief.meeting_date} at {brief.meeting_time} · New York</p>
+              <div className="meeting-objective">{englishText(brief.focus)}</div>
               <div className="meeting-sheet-meta">Data through {brief.data_as_of}{brief.previous_meeting && ` · Previous meeting ${brief.previous_meeting}`}</div>
               <div className="meeting-print-status">{reviewedAt ? "Reviewed" : "DRAFT — NOT REVIEWED"} · Revision {revision}{edited ? " · Advisor edited" : ""}</div>
             </header>
 
             <div className="meeting-sections">
               {brief.sections.map(section => <section className={`meeting-section section-${section.id}`} key={section.id}>
-                <h3>{section.title}</h3>
+                <h3>{englishText(section.title)}</h3>
                 {!section.items.length && <p className="meeting-muted">No open items are recorded.</p>}
                 {section.items.map(item => <div className="meeting-item" key={item.id}>
                   {editing ? <>
@@ -180,10 +181,10 @@ export default function MeetingPrep({ incomingBrief, calendarEvent, onBackToCale
                     {item.why !== undefined && <label className="meeting-edit-label">Why it matters<textarea value={item.why} onChange={event => updateItem(section.id, item.id, "why", event.target.value)} maxLength={500} rows={2} /></label>}
                     {item.question !== undefined && <label className="meeting-edit-label">Question to ask<textarea value={item.question} onChange={event => updateItem(section.id, item.id, "question", event.target.value)} maxLength={500} rows={2} /></label>}
                   </> : <>
-                    <h4>{item.priority && <span className="meeting-priority">{item.priority}.</span>}{item.title}</h4>
-                    <p>{item.text}</p>
-                    {item.why && <p className="meeting-why"><strong>Why now:</strong> {item.why}</p>}
-                    {item.question && <p className="meeting-question"><strong>Ask:</strong> {item.question}</p>}
+                    <h4>{item.priority && <span className="meeting-priority">{item.priority}.</span>}{englishText(item.title)}</h4>
+                    <p>{englishText(item.text)}</p>
+                    {item.why && <p className="meeting-why"><strong>Why now:</strong> {englishText(item.why)}</p>}
+                    {item.question && <p className="meeting-question"><strong>Ask:</strong> {englishText(item.question)}</p>}
                   </>}
                   <div className="meeting-refs">{item.source_ids.map(id => <button type="button" key={id} className={`meeting-ref ${selectedSource === id ? "selected" : ""}`} onClick={() => showSource(id)} aria-label={`View source ${id}`}>[{id}]</button>)}{!item.source_ids.length && <span className="meeting-muted">Advisor-provided focus</span>}</div>
                 </div>)}
@@ -206,8 +207,8 @@ export default function MeetingPrep({ incomingBrief, calendarEvent, onBackToCale
               <div className="card-body">
                 {source ? <div className="meeting-source-detail" aria-live="polite">
                   <div className="meeting-source-kind">{source.kind} · {source.id}</div>
-                  <h3 ref={evidenceHeadingRef} tabIndex={-1}>{source.title}</h3><p className="meeting-muted">{source.date || "Date not supplied"} · {source.author}</p>
-                  <pre>{source.content}</pre>
+                  <h3 ref={evidenceHeadingRef} tabIndex={-1}>{englishText(source.title)}</h3><p className="meeting-muted">{source.date || "Date not supplied"} · {englishText(source.author)}</p>
+                  <pre>{englishText(source.content)}</pre>
                 </div> : <p className="meeting-muted">Select a reference in the brief to inspect its original record.</p>}
                 <div className="meeting-source-list">{brief.sources.map(item => <button key={item.id} onClick={() => showSource(item.id)} aria-pressed={selectedSource === item.id}><span>{item.id}</span>{item.title}</button>)}</div>
               </div>
@@ -218,8 +219,8 @@ export default function MeetingPrep({ incomingBrief, calendarEvent, onBackToCale
                 {!brief.news.length && <p className="meeting-muted">No relevant news was found in the mock feed.</p>}
                 {brief.news.map(article => <div className="meeting-news" key={article.id}>
                   <span className="meeting-muted">{article.date} · {article.sector.replace(/_/g, " ")}</span>
-                  <h3><button onClick={() => showSource(article.id)}>{article.headline}</button></h3>
-                  <p>{article.relevance}</p><button className="meeting-ref" onClick={() => showSource(article.id)}>Read source [{article.id}]</button>
+                  <h3><button onClick={() => showSource(article.id)}>{englishText(article.headline)}</button></h3>
+                  <p>{englishText(article.relevance)}</p><button className="meeting-ref" onClick={() => showSource(article.id)}>Read source [{article.id}]</button>
                 </div>)}
               </div>
             </div>

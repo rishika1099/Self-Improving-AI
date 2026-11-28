@@ -15,7 +15,11 @@ dashboard/build/
 dashboard/dist/
 dashboard/.env
 *.db
+*.db-*
 *.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
 
 # Secrets
 sa-key.json

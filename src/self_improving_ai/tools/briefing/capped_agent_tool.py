@@ -11,6 +11,7 @@ from google.adk.tools.agent_tool import AgentTool
 from google.adk.tools import ToolContext
 
 from self_improving_ai.agents.briefing.store import DraftStore
+from self_improving_ai.display_language import contains_non_latin_text
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +78,8 @@ class CappedBriefingAgentTool(AgentTool):
 
         if not isinstance(full_result, dict) or "sections" not in full_result:
             return full_result
+        if contains_non_latin_text(full_result):
+            return {"status": "error", "message": "The agent did not return an English draft. Retry the preparation."}
 
         brief_id = _persist_draft(full_result, args)
         return _cap_output(full_result, brief_id)

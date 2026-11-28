@@ -1,3 +1,5 @@
+import {englishText} from './displayLanguage';
+import {renderMarkdown} from './renderMarkdown';
 import React, { useEffect, useRef, useState } from "react";
 import CopilotMeetingForm from "./CopilotMeetingForm";
 import PortfolioPanel from "./PortfolioPanel";
@@ -88,7 +90,7 @@ function Copilot({clients,msgs,setMsgs,busy,setBusy,onOpenBrief}){
 
           {msgs.map((m,i)=>(
             <div key={i} className={`msg msg-${m.role}`}>
-              {m.role==="user"&&<div className="bubble bubble-user"><div className="bubble-text">{m.text}</div><div className="bubble-time">{m.time}</div></div>}
+              {m.role==="user"&&<div className="bubble bubble-user"><div className="bubble-text">{englishText(m.text)}</div><div className="bubble-time">{m.time}</div></div>}
               {m.role==="ai"&&(
                 <div className="bubble bubble-ai">
                   {m.steps?.length>0&&(
@@ -105,7 +107,7 @@ function Copilot({clients,msgs,setMsgs,busy,setBusy,onOpenBrief}){
                       ))}
                     </div>
                   )}
-                  <div className="bubble-text" dangerouslySetInnerHTML={{__html:md(m.text)}}/>
+                  <div className="bubble-text" dangerouslySetInnerHTML={{__html:renderMarkdown(englishText(m.text, "The model did not return an English answer. Please try again."))}}/>
                   {m.meetingDetails&&!m.meetingCompleted&&<CopilotMeetingForm details={m.meetingDetails} clients={clients} busy={busy} resolution={m.meetingResolution} choices={m.meetingChoices} onLookup={clientId=>send("Prepare my next client meeting",null,i,clientId)} onGenerate={details=>send(`Prepare the meeting brief for ${clients.find(client=>client.client_id===details.client_id)?.profile.name||details.client_id} on ${details.meeting_date} at ${details.meeting_time}. Focus: ${details.focus}`,details,i)}/>}
                   {m.meetingCompleted&&<p className="co-meeting-confirmed">Meeting request updated.</p>}
                   {m.brief&&<button className="meeting-btn primary co-open-brief" onClick={()=>onOpenBrief(m.brief)}>Open Meeting Brief</button>}
@@ -115,7 +117,7 @@ function Copilot({clients,msgs,setMsgs,busy,setBusy,onOpenBrief}){
                   </div>
                 </div>
               )}
-              {m.role==="err"&&<div className="bubble bubble-err">{m.text}</div>}
+              {m.role==="err"&&<div className="bubble bubble-err">{englishText(m.text)}</div>}
             </div>
           ))}
 
@@ -406,34 +408,7 @@ function Agents({stats}){
 
 /* ════ Helpers ════ */
 function humanAgent(id){return({request_orchestrator:"Orchestrator",portfolio_estimation_agent:"Portfolio",meeting_briefing_agent:"Briefing"})[id]||id.replace(/_/g," ")}
-function ts(){return new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
-function md(t){
-  if(!t)return"";
-  const inline=text=>text.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/\*(.+?)\*/g,"<em>$1</em>");
-  const lines=t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\r\n?/g,"\n").split("\n");
-  let html="",listTag="",paragraph=[];
-  const closeList=()=>{if(listTag){html+=`</${listTag}>`;listTag="";}};
-  const closeParagraph=()=>{if(paragraph.length){html+=`<p>${paragraph.map(inline).join("<br/>")}</p>`;paragraph=[];}};
-  for(const line of lines){
-    const heading=line.match(/^ {0,3}(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/);
-    const divider=/^ {0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$/.test(line);
-    const item=line.match(/^ {0,3}(?:([-+*])|\d+[.)])\s+(.+)$/);
-    if(!line.trim()||heading||divider){
-      closeParagraph();closeList();
-      if(heading)html+=`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`;
-      else if(divider)html+="<hr/>";
-    }else if(item){
-      closeParagraph();
-      const nextTag=item[1]?"ul":"ol";
-      if(listTag!==nextTag){closeList();html+=`<${nextTag}>`;listTag=nextTag;}
-      html+=`<li>${inline(item[2])}</li>`;
-    }else{
-      closeList();paragraph.push(line);
-    }
-  }
-  closeParagraph();closeList();
-  return html;
-}
+function ts(){return new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}
 
 /* ════ App ════ */
 export default function App(){

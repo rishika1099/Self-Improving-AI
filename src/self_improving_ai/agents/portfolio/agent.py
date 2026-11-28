@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 
 from google.adk import Agent
+from google.genai import types
 
 from self_improving_ai.agents.portfolio.instructions import PORTFOLIO_INSTRUCTION
 from self_improving_ai.agents.portfolio.analysis_focus import attach_scenarios
+from self_improving_ai.agents.portfolio.model_catalog import HYDROGEN_MODEL
 from self_improving_ai.agents.portfolio.model_settings import PortfolioGemini, portfolio_api_key
 from self_improving_ai.config import settings
 from self_improving_ai.agents.portfolio.learning import get_client_learning_context, read_analysis_context
@@ -69,12 +71,16 @@ def create_portfolio_agent(model=None, *, client_id=None, learning_context=None,
         return None
     selected_model = model if model is not None else PortfolioGemini(
         model=settings.portfolio_model, api_key=portfolio_api_key())
+    generation_config = None
+    if getattr(selected_model, "model", selected_model) == HYDROGEN_MODEL:
+        generation_config = types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_level="LOW"))
     return Agent(name="portfolio_estimation_agent", model=selected_model,
                  description="Synthetic portfolio holdings, stock/bond risk, allocation drift, "
                              "goal projections and separate external market-data lookups.",
                  instruction=instruction, tools=PORTFOLIO_TOOLS, before_tool_callback=guard_client,
                  after_tool_callback=supplement,
-                 output_key="portfolio_result")
+                 output_key="portfolio_result", generate_content_config=generation_config)
 
 
 portfolio_agent = create_portfolio_agent()

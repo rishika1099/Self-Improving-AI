@@ -33,6 +33,7 @@ async def repair_judgment_boundaries(work, report, evidence, calculations, trace
     agent = Agent(name="meeting_judgment_repair", model=create_llm(model),
         generate_content_config=types.GenerateContentConfig(max_output_tokens=1200, temperature=0),
         instruction=("Fill the missing rationale and uncertainty for ONLY the listed claims. "
+            "Write the repairs in English. "
             "Return only the repairs object required by the schema, with each listed claim_id exactly once. "
             "Use one short sentence per field; keep the entire JSON under 700 tokens. "
             "Do not rewrite the brief, sections, claims, findings or agenda. "

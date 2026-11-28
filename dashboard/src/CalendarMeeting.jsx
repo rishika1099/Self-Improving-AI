@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import {englishText} from "./displayLanguage";
 import { requestJson } from "./connectionRequest";
 import { CalendarSymbol, meetingLabel } from "./calendarFormat";
 import MeetingPrep from "./MeetingPrep";
@@ -40,7 +41,7 @@ export default function CalendarMeeting({ event, preparation, clients, onBack, o
   if (brief) return <MeetingPrep key={brief.id} clients={clients} incomingBrief={brief} calendarEvent={event} onBackToCalendar={onBack}/>;
   return <section className="calendar-meeting-loading">
     <button className="calendar-back" onClick={onBack}><CalendarSymbol name="previous" size={16}/>Back to calendar</button>
-    <div className="calendar-preparing-content"><CalendarSymbol name="document" size={32}/><h2>{event.client_name}</h2><p>{event.title}</p><p>{meetingLabel(event)}</p>
+    <div className="calendar-preparing-content"><CalendarSymbol name="document" size={32}/><h2>{englishText(event.client_name,event.client_id)}</h2><p>{englishText(event.title)}</p><p>{meetingLabel(event)}</p>
       {error ? <><p className="meeting-error" role="alert">{error}</p><button className="meeting-btn primary" onClick={retryPreparation}>Retry preparation</button></>
         : <div role="status"><h3>Preparing your meeting brief</h3><p>We’re bringing together the client’s updates, portfolio and discussion priorities.</p></div>}
     </div>

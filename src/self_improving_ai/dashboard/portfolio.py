@@ -1,12 +1,14 @@
 """Component A endpoints; explicit calculations and model-driven requests are separate."""
 from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from self_improving_ai.agents.portfolio.service import execute_task, run_portfolio_agent
-from self_improving_ai.agents.portfolio.application import calculate_for_client, analyze_for_client, save_client_note, require_client
+from self_improving_ai.agents.portfolio.application import (
+    analyze_for_client, calculate_for_client, clear_client_learning, require_client, save_client_note,
+)
 from self_improving_ai.agents.portfolio.learning import Journal, analysis_scope
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -104,10 +106,14 @@ async def ask_agent(request: AgentRequest):
 
 
 @router.get('/learning/{client_id}')
-def learning_view(client_id: str, x_portfolio_analysis: str | None = Header(default=None, max_length=100)):
+def learning_view(client_id: str, x_portfolio_analysis: str | None = Header(default=None, max_length=100),
+                  page: int = Query(default=1, ge=1),
+                  event_id: str | None = Query(default=None, min_length=1, max_length=100, pattern=r'^[A-Za-z0-9_-]+$'),
+                  operation_number: str | None = Query(default=None, pattern=r'^UNI-[0-9]{6,19}$')):
     try:
         require_client(client_id)
-        return Journal().view(client_id, analysis_scope(group=x_portfolio_analysis))
+        return Journal().display_view(client_id, analysis_scope(group=x_portfolio_analysis), page=page,
+                                      event_id=event_id, operation_number=operation_number)
     except ValueError as exc:
         raise HTTPException(404,str(exc)) from exc
     except Exception as exc:
@@ -145,17 +151,36 @@ class ReinterpretRequest(BaseModel):
 class RiskCalibration(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     score: int | None = Field(ge=0, le=100)
+    mode: Literal["adaptive", "fixed"] = "adaptive"
     revision: int = Field(ge=0)
     profile_version: int = Field(ge=0)
+    generation: int = Field(default=0, ge=0)
 
 
 @router.post('/learning/{client_id}/risk-calibration')
 def calibrate_risk(client_id: str, request: RiskCalibration):
     try:
         require_client(client_id)
-        return Journal().calibrate(client_id, request.score, request.revision, request.profile_version)
+        return Journal().calibrate(client_id, request.score, request.revision, request.profile_version,
+                                   request.mode, request.generation)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+class ClearLearningRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    confirm: Literal[True]
+    generation: int = Field(ge=0)
+
+
+@router.post('/learning/{client_id}/clear')
+def clear_learning(client_id: str, request: ClearLearningRequest):
+    try:
+        return clear_client_learning(client_id, request.generation)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, 'The clear request did not complete. Refresh and try again.') from exc
 
 
 @router.post('/learning/{client_id}/reinterpret/{event_id}')
@@ -187,9 +212,7 @@ def learning_retract(client_id: str,event_id: str):
 def learning_export(client_id: str):
     try:
         require_client(client_id)
-        journal=Journal()
-        return {'schema_version':'portfolio-integration-export-v1',
-                'view':journal.view(client_id),'deliveries':journal.rows(client_id)}
+        return Journal().export(client_id)
     except ValueError as exc:
         raise HTTPException(404,str(exc)) from exc
     except Exception as exc:

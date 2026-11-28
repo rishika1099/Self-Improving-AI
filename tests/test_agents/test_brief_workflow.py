@@ -56,6 +56,14 @@ class WorkflowTests(unittest.TestCase):
         codes = {f["code"] for f in check_work(work, workflow["evidence"], [])["findings"]}
         self.assertTrue({"UNKNOWN_SOURCE", "MISSING_CALCULATION"} <= codes)
 
+    def test_work_rejects_untranslated_generated_prose(self):
+        workflow = demo()["workflow"]
+        work = deepcopy(workflow["work"])
+        work["context_summary"] = "请核对客户目标"
+        report = check_work(work, workflow["evidence"], workflow["calculations"])
+        self.assertEqual(report["verdict"], "revise")
+        self.assertIn("OUTPUT_LANGUAGE", {finding["code"] for finding in report["findings"]})
+
     def test_cross_client_and_post_cutoff_sources_are_unavailable(self):
         self.assertEqual(read_source("CLI-003", "EMAIL-004")["status"], "denied")
         mock_ctx_result = {

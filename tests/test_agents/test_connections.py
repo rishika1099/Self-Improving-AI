@@ -165,7 +165,7 @@ def test_gemini_connection_test_checks_generation(connection_client,monkeypatch)
 def test_model_choices_only_offer_reviewed_free_tier_text_models(connection_client):
     options=connection_client.get("/api/portfolio/connections").json()["agent"]["model_options"]
     assert {item["id"] for item in options}=={
-        "gemini-3.5-flash-lite","gemini-3.1-flash-lite","gemini-3.6-flash","gemini-3.8-flash"}
+        "gemini-3.5-flash-lite","gemini-3.1-flash-lite","gemini-3.6-flash","gemini-3.8-flash","gemini-4-hydrogen"}
     assert all(item["free_tier_available"] for item in options)
     assert [item["id"] for item in options if item["recommended"]]==["gemini-3.5-flash-lite"]
 
@@ -267,6 +267,35 @@ def test_empty_or_thought_only_model_probe_is_not_a_verified_connection(connecti
                                  json={"api_key":"offline-only"}).json()
     assert result["status"]=="error"
     assert result["error"]["code"]=="EMPTY_MODEL_RESPONSE"
+
+
+@pytest.mark.parametrize("model",["gemini-3.8-flash","gemini-4-hydrogen"])
+def test_metadata_and_unavailable_generation_are_reported_separately(connection_client,monkeypatch,model):
+    from google import genai
+
+    class Busy(Exception):
+        code = 503
+        message = "private provider response"
+
+    class Probe:
+        def __init__(self, **kwargs):
+            assert kwargs["http_options"].timeout >= 10000
+            self.models = self
+        def get(self, *, model, config):
+            return types.Model(name="models/"+model)
+        def generate_content(self, *, model, contents, config):
+            assert config.thinking_config.thinking_level == "LOW"
+            raise Busy()
+        def close(self):
+            pass
+
+    monkeypatch.setattr(genai,"Client",Probe)
+    result=connection_client.post("/api/portfolio/connections/agent/test",
+        json={"api_key":"offline","model":model}).json()
+    assert result["status"] == "error" and result["model_visible"]
+    assert result["error"]["code"] == "MODEL_BUSY" and result["error"]["provider_http_status"] == 503
+    assert f"Google recognizes {model}" in result["error"]["message"]
+    assert "private provider response" not in result["error"]["message"]
 
 
 @pytest.mark.parametrize("tab,code",[("agent","MODEL_TIMEOUT"),("market","TIMEOUT")])

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from threading import Lock
 from self_improving_ai.tools.portfolio.holdings import _load_households
 from self_improving_ai.agents.portfolio.learning import (
-    event_from, read_analysis_context, record_finish, record_start, valid_client,
+    Journal, event_from, read_analysis_context, record_finish, record_start, valid_client,
 )
 from self_improving_ai.agents.portfolio.service import execute_task, run_portfolio_agent
 from self_improving_ai.agents.portfolio.analysis_focus import attach_scenarios
@@ -31,6 +31,14 @@ def request_slot(client_id,event_id):
 def require_client(client_id):
     if not valid_client(client_id):
         raise ValueError('Select a known client before recording an operation.')
+
+
+def clear_client_learning(client_id, generation):
+    require_client(client_id)
+    with _request_lock:
+        if any(client == client_id for client, _ in _inflight):
+            raise ValueError('An analysis is running for this client. Wait for it to finish before clearing the records.')
+        return Journal().clear(client_id, generation)
 
 
 def require_matching_message(message, client_id, account_id=None):

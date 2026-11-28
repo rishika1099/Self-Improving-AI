@@ -3,6 +3,7 @@
 import asyncio
 import importlib
 import json
+import socket
 from copy import deepcopy
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
@@ -28,7 +29,12 @@ REQUEST = {"client_id": "SYNTHETIC-1", "meeting_date": "2026-11-10",
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    def blocked(*args, **kwargs):
+    connect = socket.socket.connect
+
+    def blocked(sock, address):
+        # Windows asyncio creates its wake-up socket on loopback.
+        if isinstance(address, tuple) and address[0] in {"127.0.0.1", "::1"}:
+            return connect(sock, address)
         raise AssertionError("This regression suite must not contact external services")
     monkeypatch.setattr("socket.socket.connect", blocked)
 
@@ -51,6 +57,15 @@ def synthetic_brief():
 
 class SmallOutput(BaseModel):
     summary: str
+
+
+async def test_chat_returns_an_english_status_for_untranslated_model_output(api):
+    run = {"steps": [], "response_parts": ["客户组合的分析结果"]}
+    with patch.object(api, "_get_or_create_session", new=AsyncMock(return_value="synthetic")), \
+         patch.object(api, "run_copilot", new=AsyncMock(return_value=run)):
+        result = await api.chat(api.ChatRequest(message="Quick portfolio summary"))
+    assert result["error_code"] == "output_language_mismatch"
+    assert result["response"] == "The model did not return an English answer. Please try the request again."
 
 
 @pytest.mark.parametrize("truncated", [False, True])
@@ -286,10 +301,10 @@ async def test_delegated_provider_failure_is_not_retried_by_parent(api, truncate
 
 
 def test_both_copilot_models_register_the_bounded_adapter(api):
-    from self_improving_ai.tools.briefing.copilot import meeting_briefing_agent
-    assert meeting_briefing_agent in api.orchestrator.tools
+    from self_improving_ai.tools.briefing.capped_agent_tool import CappedBriefingAgentTool
+    assert any(isinstance(tool, CappedBriefingAgentTool) for tool in api.orchestrator.tools)
     with patch.object(api, "_fallback_runner", None):
-        assert meeting_briefing_agent in api._get_fallback_runner().agent.tools
+        assert any(isinstance(tool, CappedBriefingAgentTool) for tool in api._get_fallback_runner().agent.tools)
 
 
 async def test_parallel_duplicate_calls_share_work_but_later_requests_do_not():

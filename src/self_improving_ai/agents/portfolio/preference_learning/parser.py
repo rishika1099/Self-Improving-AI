@@ -5,9 +5,12 @@ import json
 import os
 import re
 from urllib import request, error
+from self_improving_ai.agents.portfolio.model_catalog import HYDROGEN_MODEL
 from .prompts import SYSTEM_PROMPT, PROMPT_VERSION
 from .provider_backoff import active_wait, remember_wait
 
+RISK_BASES = ("declared_attitude", "risk_return_tradeoff", "observed_risk_choice", "allocation_intent",
+              "current_risk_attitude", "directed_inquiry", "stock_target_inquiry", "no_direction")
 
 EXTRACTION_SCHEMA = {
     "type": "object",
@@ -19,13 +22,13 @@ EXTRACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_id", "reason", "risk_basis", "client_topic","risk_direction"],
+                "required": ["kind", "dimension", "value", "assertion", "scope", "evidence_id", "reason", "risk_basis", "client_topic","risk_direction","scope_quote"],
                 "properties": {
                     "kind": {"type": "string"},
                     "dimension": {"type": "string", "enum": ["risk_tilt", "adjustment_style", "attention", "constraint", "correction"]},
                     "value": {"type": "string", "enum": [
                         "conservative", "balanced", "growth", "gradual", "flexible",
-                        "liquidity", "income_goal", "capital_preservation", "leverage",
+                        "liquidity", "income_goal", "return_priority", "loss_reaction", "capital_preservation", "leverage",
                         "risk_change", "adjustment_pace", "max_loss_limit", "budget",
                         "restricted_funds", "other",
                     ]},
@@ -40,9 +43,11 @@ EXTRACTION_SCHEMA = {
                             "unresolved": {"type": "boolean"},
                         },
                     },
-                    "risk_basis": {"type": "string"},
+                    "risk_basis": {"type": "string", "enum": list(RISK_BASES)},
+                    "risk_intensity": {"type": "string", "enum": ["mild", "moderate", "strong"]},
+                    "scope_quote": {"type":"string"},
                     "risk_direction": {"type":"string","enum":["lower","higher","balanced","none"]},
-                    "client_topic": {"type":"string","enum":["liquidity","income_goal","capital_preservation",
+                    "client_topic": {"type":"string","enum":["liquidity","income_goal","return_priority","loss_reaction","capital_preservation",
                                      "leverage","risk_change","adjustment_pace","other"]},
                     "stock_target_pct": {"type": "number"},
                     "evidence_id": {"type": "integer"},
@@ -113,7 +118,7 @@ class GeminiParser:
     def __call__(self, text):
         return self.parse_scoped(text, None)
 
-    def parse_scoped(self, text, scope):
+    def parse_scoped(self, text, scope, *, prior_notes=()):
         key = self._api_key
         if key is None:
             key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
@@ -131,10 +136,14 @@ class GeminiParser:
         sentences = numbered_excerpts(text, independent_clauses=True)
         if len(sentences) > 1:
             parts.append({"text": json.dumps(dict(enumerate(sentences, 1)), ensure_ascii=False)})
+        if prior_notes:
+            parts.append({"text": json.dumps({"earlier_notes_reference_only": prior_notes}, ensure_ascii=False)})
+        generation_config = {"responseMimeType":"application/json",
+                             "responseJsonSchema":EXTRACTION_SCHEMA,"maxOutputTokens":2048}
+        if self.model == HYDROGEN_MODEL:
+            generation_config.update(thinkingConfig={"thinkingLevel":"LOW"}, maxOutputTokens=8192)
         payload = {"systemInstruction":{"parts":[{"text":instruction}]},
-                   "contents":[{"role":"user","parts":parts}],
-                   "generationConfig":{"responseMimeType":"application/json",
-                                       "responseJsonSchema":EXTRACTION_SCHEMA,"maxOutputTokens":2048}}
+                   "contents":[{"role":"user","parts":parts}], "generationConfig":generation_config}
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         req = request.Request(url, data=json.dumps(payload).encode(), headers={
             "x-goog-api-key":key, "Content-Type":"application/json"}, method="POST")

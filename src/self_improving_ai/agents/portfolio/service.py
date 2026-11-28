@@ -16,6 +16,7 @@ from self_improving_ai.agents.portfolio.model_settings import portfolio_api_key
 from self_improving_ai.agents.portfolio.preference_learning.provider_backoff import active_wait, remember_wait
 from self_improving_ai.agents.portfolio.provenance import run_metadata
 from self_improving_ai.config import settings
+from self_improving_ai.display_language import contains_non_latin_text
 from self_improving_ai.tools.portfolio.allocation import calculate_allocation_drift
 from self_improving_ai.tools.portfolio.holdings import get_holdings
 from self_improving_ai.tools.portfolio.market_data_api import (
@@ -137,6 +138,12 @@ async def run_portfolio_agent(message: str, *, model=None, lessons: str = "", cl
                 if event.is_final_response() and event.content:
                     run["response"] = "".join(part.text or "" for part in event.content.parts or []
                                                if not part.thought)
+        if contains_non_latin_text(run["response"]):
+            run["response"] = ""
+            if "result" not in run:
+                run["result"] = model_failure("MODEL_LANGUAGE_MISMATCH",
+                    "Gemini did not return an English answer. Retry the analysis. Completed tool results are in Execution evidence.",
+                    retryable=True)
         if "result" not in run:
             # A provider can finish with a bare template tag (observed live).
             visible = re.sub(r"<[^>]*>", "", run["response"]).strip(" \n\r\t`")

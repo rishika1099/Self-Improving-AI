@@ -27,6 +27,7 @@ def risk_score(view, state, rules, conflicts):
         probs = dict(zip(labels, normalize_log_support(logs)))
         ledger.append({"event_id": signal["source_event_id"], "revision": signal["source_revision"],
                        "group": signal["evidence_group_id"], "rule": signal["rule_id"],
+                       "kind": signal["kind"], "value": signal["value"], "occurred_at": signal["occurred_at"],
                        "source": signal.get("evidence_text"), "parameters": signal.get("basis"),
                        "criterion": signal.get("risk_basis"), "interpretation": signal.get("semantic_reason"),
                        "legacy_text": bool(signal.get("evidence_text") and not signal.get("risk_basis")),

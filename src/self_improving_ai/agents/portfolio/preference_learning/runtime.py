@@ -12,7 +12,8 @@ import sqlite3
 from .context import build_context
 from .learner import load_rules, rebuild_state, result_from, update_state
 from .parser import ParsePacket
-from .schemas import canonical, checked_id, event_scope, issue, validate_event
+from .prompts import PROMPT_VERSION
+from .schemas import canonical, checked_id, event_scope, issue, timestamp, validate_event
 from .signals import extract_signals
 
 
@@ -145,7 +146,31 @@ class PortfolioLearner:
             return None
         packet = ParsePacket(parser["raw"], parser["mode"], parser.get("model"),
                              parser.get("prompt_version"))
-        return earlier["revision"], packet
+        return earlier["event_id"], earlier["revision"], packet
+
+    def _repeated_round_parse(self, db, event):
+        if event["revision"] >= 3 or not event["user_text"].strip():
+            return None
+        candidates = db.execute("""SELECT extraction FROM events AS e
+            WHERE client=? AND event<>? AND json_extract(extraction, '$.event.user_text')=?
+            AND json_extract(extraction, '$.event.evidence_group_id')=?
+            AND json_extract(extraction, '$.event.entry_point')=?
+            AND json_extract(extraction, '$.event.text_source')=?
+            AND NOT EXISTS (SELECT 1 FROM retractions AS r WHERE r.client=e.client AND r.event=e.event)
+            ORDER BY json_extract(extraction, '$.event.occurred_at') DESC, rev DESC""",
+            (event["client_id"], event["event_id"], event["user_text"], event["evidence_group_id"],
+             event["entry_point"], event.get("text_source")))
+        for row in candidates:
+            previous = json.loads(row[0])
+            source = previous["event"]
+            parser = previous["parser"]
+            if (source["task"] == event["task"] and event_scope(source) == event_scope(event)
+                    and previous["status"] == parser.get("validation") == "ok" and not previous["issues"]
+                    and parser.get("prompt_version") == PROMPT_VERSION and parser.get("mode") == "gemini_live"
+                    and isinstance(parser.get("raw"), str)):
+                packet = ParsePacket(parser["raw"], parser["mode"], parser.get("model"), PROMPT_VERSION)
+                return source["event_id"], source["revision"], packet
+        return None
 
     def process_event(self, raw_event, *, expected_profile_version=None, retry_pending=False):
         """An optional version supports optimistic concurrency across callers."""
@@ -162,18 +187,41 @@ class PortfolioLearner:
                 if conflict:
                     return conflict
                 base_version = self._state(db,client)["profile_version"]
+                parser = self.parser
+                prior_notes = []
+                with_prior_notes = getattr(parser, "with_prior_notes", None)
+                if with_prior_notes and event["entry_point"] == "advisor_note" and event["user_text"]:
+                    state = {"client_id": client}
+                    history = self._history(db, client)
+                    recent = rebuild_state(state, history, self.rules)["risk_observations"]
+                    scope = event_scope(event)
+                    at = timestamp(event["occurred_at"])
+                    for row in reversed(recent):
+                        quote = row.get("evidence_text")
+                        if (quote and quote != event["user_text"] and quote not in prior_notes
+                                and row["entry_point"] == "advisor_note" and row.get("scope") == scope
+                                and 0 < (at - timestamp(row["occurred_at"])).total_seconds() < 7 * 86400):
+                            prior_notes.append(quote[:350])
+                        if len(prior_notes) == 5:
+                            break
+                    if prior_notes:
+                        parser = with_prior_notes(prior_notes[::-1])
                 reusable = self._reusable_initial_parse(db, event)
+                if reusable is None and not prior_notes:
+                    reusable = self._repeated_round_parse(db, event)
             if reusable is None:
-                extraction = extract_signals(raw_event, self.parser)
+                extraction = extract_signals(raw_event, parser)
             else:
-                source_revision, packet = reusable
+                source_event, source_revision, packet = reusable
                 # Revalidate the stored text semantics and derive signals from the
                 # current execution fields. The current revision owns the signals.
                 extraction = extract_signals(raw_event, lambda _: packet)
                 if extraction["parser"].get("validation") == "ok":
                     extraction["parser"]["reused_from_revision"] = source_revision
+                    if source_event != event["event_id"]:
+                        extraction["parser"]["reused_from_event"] = source_event
                 else:
-                    extraction = extract_signals(raw_event, self.parser)
+                    extraction = extract_signals(raw_event, parser)
             with self._write() as db:
                 conflict = self._preflight(db,event,digest,base_version,retry_pending=retry_pending)
                 if conflict:
@@ -203,7 +251,7 @@ class PortfolioLearner:
             return self._plain(None,"storage_error","event_not_saved",
                                "The write could not be completed; any last committed profile is preserved.")
 
-    def get_context(self, client_id, scope=None):
+    def get_context(self, client_id, scope=None, *, include_risk_observations=False):
         checked_id(client_id, "client_id")
         with closing(self._connect()) as db:
             db.execute("BEGIN")
@@ -212,11 +260,14 @@ class PortfolioLearner:
             has_notes = db.execute("SELECT 1 FROM events WHERE client=? AND "
                                    "json_extract(extraction,'$.event.entry_point')='advisor_note' LIMIT 1",
                                    (client_id,)).fetchone()
-            if has_notes:
+            if has_notes or include_risk_observations:
                 history = self._history(db, client_id)
+            if has_notes:
                 context["risk_source_scores"] = {
                     key: self._source_scores(state, history, scope, notes)
                     for key, notes in (("operations", False), ("notes", True))}
+            if include_risk_observations:
+                context["risk_observations"] = rebuild_state(state, history, self.rules)["risk_observations"]
             return context
 
     def _source_scores(self, state, history, scope, notes):

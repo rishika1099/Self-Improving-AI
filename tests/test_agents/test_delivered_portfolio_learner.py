@@ -64,12 +64,79 @@ def test_configured_factory_uses_delivered_learner_and_preserves_actual_calculat
     context = api.get(API).json()["context"]
     assert context["team_declared"][0]["value"] == "conservative"
     assert api.get("/api/portfolio/learning/CLI-002").json()["context"]["team_declared"] == []
-    assert context["working_risk_index"]["automatic"] == context["risk_source_scores"]["operations"][0]["score"]
-    assert context["working_risk_index"]["reference"] == pytest.approx(
-        .85*context["working_risk_index"]["automatic"] + .15*context["working_risk_index"]["note_score"])
+    index = context["working_risk_index"]
+    assert 49.75 <= index["automatic"] < 50
+    assert index["reference"] == pytest.approx(25 + index["breakdown"]["trial_points"])
     assert PortfolioLearner(learning.workspace() / "learner").get_context(CLIENT) == {
         k:v for k,v in context.items() if k != "working_risk_index"}
     assert api.post(f"{API}/retract/statement").json()["context"]["team_declared"] == []
+
+
+def test_conflict_evidence_resolves_old_records_in_the_selected_client(api):
+    note(api, STATEMENT, "old-declaration")
+    higher = api.post("/api/portfolio/execute", json={
+        "task": "allocation", "client_id": CLIENT, "target_stock_weight": .95,
+        "observation": {"event_id": "higher-trial", "parameter_sources": {"target_stock_weight": "manual"}},
+    })
+    higher.raise_for_status()
+    for i in range(10):
+        response = api.post("/api/portfolio/execute", json={
+            "task": "holdings", "client_id": CLIENT, "observation": {"event_id": f"holdings-{i}"},
+        })
+        response.raise_for_status()
+    first = api.get(API).json()
+    assert all(row["event_id"] != "old-declaration" for row in first["events"])
+    conflict = next(c for c in first["context"]["conflicts"] if c["kind"] == "exploration_differs_from_declaration")
+    declaration, trial = (first["conflict_sources"]["signals"][ref] for ref in conflict["evidence_ids"])
+    assert declaration["event_id"] == "old-declaration" and declaration["evidence_text"] == STATEMENT
+    assert trial["event_id"] == "higher-trial" and trial["basis"]["target_stock_weight"] == .95
+    located = api.get(API, params={"event_id": "old-declaration"}).json()
+    assert located["located_event"] and located["pagination"]["page"] == 2
+    assert any(row["event_id"] == "old-declaration" for row in located["events"])
+    number = first["source_operation_numbers"]["old-declaration"]
+    assert number.startswith("UNI-")
+    numbered = api.get(API, params={"operation_number": number}).json()
+    assert numbered["located_event_id"] == "old-declaration" and numbered["pagination"]["page"] == 2
+    assert next(row["operation_number"] for row in numbered["events"] if row["event_id"] == "old-declaration") == number
+    other = api.get("/api/portfolio/learning/CLI-002", params={"event_id": "old-declaration"}).json()
+    assert not other["located_event"] and "conflict_sources" not in other
+
+
+def test_operation_number_survives_outage_retry_reinterpretation_and_withdrawal(api, monkeypatch):
+    learner = learning.adapter_for(FACTORY, str(learning.workspace())).learner
+    parser = learner.parser
+    learner.parser = None
+    pending = note(api, STATEMENT, "same-input")
+    assert pending["learning"]["status"] == "processing_pending"
+    initial = api.get(API).json()
+    number = initial["events"][0]["operation_number"]
+    assert initial["context"] is None and number.startswith("UNI-")
+
+    note(api, STATEMENT, "same-input")
+    waiting = api.get(API, params={"operation_number": number}).json()
+    assert waiting["total_events"] == 1 and waiting["located_event_id"] == "same-input"
+    learner.parser = parser
+    api.post(f"{API}/retry").raise_for_status()
+    api.post(f"{API}/reinterpret/same-input", json={"revision": 2}).raise_for_status()
+    updated = api.get(API).json()["events"][0]
+    assert updated["revision"] == 3 and updated["operation_number"] == number
+    api.post(f"{API}/retract/same-input").raise_for_status()
+    withdrawn = api.get(API, params={"operation_number": number}).json()
+    assert {row["kind"] for row in withdrawn["events"]} == {"event", "retract"}
+    assert {row["operation_number"] for row in withdrawn["events"]} == {number}
+    assert api.get(f"{API}/export").json()["operation_numbers"] == {"same-input": number}
+
+    other = "/api/portfolio/learning/CLI-002"
+    api.post(other + "/notes", json={"message": STATEMENT, "observation": {"event_id": "same-input"}}).raise_for_status()
+    other_number = api.get(other).json()["events"][0]["operation_number"]
+    assert other_number != number
+    assert not api.get(other, params={"operation_number": number}).json()["located_event"]
+
+    api.post(f"{API}/clear", json={"confirm": True, "generation": withdrawn["generation"]}).raise_for_status()
+    note(api, STATEMENT, "same-input")
+    assert not api.get(API, params={"operation_number": number}).json()["located_event"]
+    assert api.get(API).json()["events"][0]["operation_number"] not in {number, other_number}
+    assert api.get(other).json()["events"][0]["operation_number"] == other_number
 
 
 def test_duplicate_pending_update_stays_pending_then_reparses_on_retry(api):
@@ -121,11 +188,15 @@ def test_failed_agent_calculation_can_recover_preference_on_retry(api, monkeypat
         "client_id": CLIENT, "message": STATEMENT, "observation": {"event_id": "failed-analysis"},
     }).json()
     assert run["status"] == "error" and run["learning"]["status"] == "processing_pending"
-    assert api.get(API).json()["context"] is None
+    failed_record = api.get(API).json()
+    assert failed_record["context"] is None
+    number = failed_record["events"][0]["operation_number"]
+    assert number.startswith("UNI-")
     learner.parser = parser
     view = api.post(f"{API}/retry").json()
     assert view["pending_count"] == 0
     assert view["context"]["team_declared"][0]["value"] == "conservative"
+    assert view["events"][0]["operation_number"] == number
 
 
 def test_completed_agent_request_reuses_validated_text_and_keeps_queue_moving(api, monkeypatch):
@@ -343,16 +414,16 @@ def test_ordinary_use_calibration_and_personalized_scenarios(api):
             payload.update(target_stock_weight=weight)
             payload["observation"]["parameter_sources"] = {"target_stock_weight":"manual"}
         return api.post("/api/portfolio/execute", json=payload).json()["result"]
-    assert context()["working_risk_index"]["effective"] is None
+    assert context()["working_risk_index"]["effective"] == 50
     compute("risk", "plain")
-    assert context()["working_risk_index"]["effective"] is None
+    assert context()["working_risk_index"]["status"] == "insufficient"
     compute("risk", "lower", .60)
     before = context()["working_risk_index"]["automatic"]
-    assert 43 < before < 44
+    assert 48 < before < 48.1
     result = compute("holdings","positions")["personalized_analysis"]
-    assert result["focus"] == "downside"
-    assert result["scenario_step_pp"] == 6 and result["rows"][-1]["stock_fall_usd"] == -15849
-    assert result["rows"][-1]["downside_change_usd"] == 1761
+    assert result["focus"] == "compare"
+    assert result["scenario_step_pp"] == 5 and result["rows"][2]["stock_fall_usd"] == -16142.5
+    assert result["rows"][2]["downside_change_usd"] == 1467.5
     adjust(72)
     assert context()["working_risk_index"]["effective"] == 72
     higher=compute("allocation","higher",.95)["personalized_analysis"]
@@ -360,7 +431,7 @@ def test_ordinary_use_calibration_and_personalized_scenarios(api):
     changed=context()["working_risk_index"]
     assert changed["effective"] == pytest.approx(72 + changed["automatic"] - before)
     assert changed["effective"] > 72
-    assert api.get("/api/portfolio/learning/CLI-002").json()["context"]["working_risk_index"]["effective"] is None
+    assert api.get("/api/portfolio/learning/CLI-002").json()["context"]["working_risk_index"]["effective"] == 50
     adjust(None)
     restored=context()["working_risk_index"]
     assert restored["effective"] == restored["automatic"]
@@ -380,7 +451,7 @@ def test_ordinary_chat_targets_need_verified_request_and_execution(api, monkeypa
                   "observation":{"event_id":"chat","text_source":"manual"}}).json()
     assert data["status"] == "success"
     view=api.get(API).json()
-    assert 43 < view["context"]["working_risk_index"]["automatic"] < 44
+    assert 48 < view["context"]["working_risk_index"]["automatic"] < 48.1
     event=view["events"][-1]["event"]
     for changes in ({"text_source":"default"},{"execution_trace":[]},{"user_text":"只查持仓"}):
         result=extract_signals({**event,**changes},lambda _: [extracted])
@@ -405,7 +476,39 @@ def test_chat_target_verifies_numeric_wording(text,pct):
     assert mentioned_percentages(text) == {pct}
 
 
-def test_notes_remain_secondary_even_in_same_analysis(api):
+@pytest.mark.parametrize("text,excerpt,tool_targets,model_target,accepted", [
+    ("股票40%，债券60%。","股票40%，债券60%。",[.6],60,False),
+    ("股票40%，债券60%。","股票40%，债券60%。",[.4],40,True),
+    ("只比较40/60和80/20。","只比较40/60和80/20。",[.4],40,False),
+    ("先算40/60。另外比较80/20。","先算40/60。",[.4],40,False),
+    ("请算60/40。","请算60/40。",[.6,.8],60,False),
+    ("预期收益60%","预期收益60%",[.6],60,False),
+    ("当前是80/20，想调到60/40。","当前是80/20，想调到60/40。",[.6],60,True),
+    ("从80/20调到60/40。","从80/20调到60/40。",[.6],60,True),
+])
+def test_chat_target_is_uniquely_bound_to_stock(text, excerpt, tool_targets, model_target, accepted):
+    from self_improving_ai.agents.portfolio.preference_learning.signals import verified_chat_target
+    trace=[{"kind":"result","tool":"calculate_allocation_drift","result":{
+        "status":"success","client_id":CLIENT,"target_source":"request_override",
+        "asset_classes":{"stock":{"current_weight":.79,"target_weight":weight}}}} for weight in tool_targets]
+    result=verified_chat_target({"client_id":CLIENT,"user_text":text,"execution_trace":trace},
+                                {"stock_target_pct":model_target,"evidence_text":excerpt})
+    assert result == ((.79,model_target/100) if accepted else None)
+
+
+@pytest.mark.parametrize("wording,scope_quote,temporary",[
+    ("请算调到60/40需要改多少。","",False),
+    ("请算调到60/40需要改多少。",None,True),
+    ("请算调到60/40，只限这次。","只限这次",True),
+    ("请算调到60/40，本轮演练。","",True)])
+def test_trial_scope_preserves_real_restrictions_and_account(wording,scope_quote,temporary):
+    from self_improving_ai.agents.portfolio.preference_learning.signals import verified_trial_scope
+    event={"user_text":wording,"scope":{"account_id":"A"},"evidence_group_id":"round"}
+    item={"scope":{"account_id":"A","analysis_id":"round","applicability":"current"},"scope_quote":scope_quote}
+    assert verified_trial_scope(event,item)==(item["scope"] if temporary else {"account_id":"A"})
+
+
+def test_declared_willingness_anchors_the_score_even_in_same_analysis(api):
     group={"evidence_group_id":"same-analysis"}
     api.post("/api/portfolio/execute",json={"task":"risk","client_id":CLIENT,"target_stock_weight":.95,
              "observation":{**group,"parameter_sources":{"target_stock_weight":"manual"}}}).raise_for_status()
@@ -416,7 +519,7 @@ def test_notes_remain_secondary_even_in_same_analysis(api):
     api.post(API+"/notes",json={"message":STATEMENT,"observation":{**group,"event_id":"supplement"}}).raise_for_status()
     combined=index()
     assert combined["automatic"]==baseline
-    assert combined["reference"]==pytest.approx(.85*baseline + .15*(100/9.5))
+    assert combined["reference"]==pytest.approx(baseline - 25)
     api.post(API+"/retract/supplement").raise_for_status()
     assert index()["effective"]==baseline
 
@@ -436,6 +539,279 @@ def test_uncovered_compound_clause_is_retained_for_review():
     complete=parse([first,second])
     assert not complete["issues"]
     assert any(s["kind"]=="client_cue" and s["value"]=="liquidity" for s in complete["signals"])
+
+
+def test_mixed_trials_fixed_adaptive_and_retraction_in_normal_use(api):
+    def index():
+        return api.get(API).json()["context"]["working_risk_index"]
+    def trial(event, group, target):
+        api.post("/api/portfolio/execute", json={"task":"allocation", "client_id":CLIENT,
+                 "target_stock_weight":target, "observation":{"event_id":event,"evidence_group_id":group,
+                 "parameter_sources":{"target_stock_weight":"manual"}}}).raise_for_status()
+        return index()
+    def save(score, mode):
+        ctx = api.get(API).json()["context"]
+        api.post(API+"/risk-calibration", json={"score":score,"mode":mode,
+                 "profile_version":ctx["profile_version"],"revision":ctx["working_risk_index"]["calibration"]["revision"]}).raise_for_status()
+    assert trial("lower","one",.30)["effective"] < 50
+    assert trial("higher","one",.95)["effective"] > 50
+    latest = trial("lower-again","one",.30)
+    assert latest["effective"] < 50 and latest["groups"] == 1
+    assert trial("repeat","one",.30)["effective"] == latest["effective"]
+    note(api, STATEMENT, "willingness")
+    assert index()["effective"] == pytest.approx(latest["effective"] - 25)
+    save(70,"fixed")
+    after = trial("new","two",.95)
+    assert 24 <= after["reference"] < 25 and after["effective"] == 70
+    run = api.post("/api/portfolio/execute",json={"task":"holdings","client_id":CLIENT}).json()
+    assert run["result"]["personalized_analysis"]["score_used"] == 70
+    save(70,"adaptive")
+    lower = trial("late","three",.20)
+    assert 68 <= lower["effective"] < 70
+    api.post(API+"/retract/late").raise_for_status()
+    assert index()["effective"] == pytest.approx(70)
+    save(None,"adaptive")
+    assert index()["effective"] == pytest.approx(after["reference"])
+
+
+def test_trial_influence_saturates_and_defaults_are_weaker():
+    from self_improving_ai.agents.portfolio.analysis_focus import evidence_estimate
+    def trials(count,source,target):
+        return [{"group":str(i),"value":"growth","rule":source+"_raise_equity",
+                 "parameters":{"target_stock_weight":target,"current_stock_weight":.5}} for i in range(count)]
+    for count in (1,10,100):
+        assert 50 < evidence_estimate(trials(count,"manual",1),None)["score"] <= 58
+    assert 50 < evidence_estimate(trials(1,"default",1),None)["score"] <= 50.25
+    assert 50 < evidence_estimate(trials(1,"manual",.51),None)["score"] <= 50.11
+
+
+def test_pending_screen_snapshot_is_client_specific_and_never_fed_to_agent(api,monkeypatch):
+    note(api,STATEMENT,"declaration")
+    assert api.get(API).json()["context"]["working_risk_index"]["effective"] == 25
+    learner=learning.adapter_for(FACTORY,str(learning.workspace())).learner
+    learner.parser=None
+    note(api,"a second statement","pending")
+    view=api.get(API).json()
+    assert view["context"] is None and view["last_confirmed_display"]["score"] == 25
+    assert learning.read_analysis_context(CLIENT)["context"] is None
+    assert "last_confirmed_display" not in api.get("/api/portfolio/learning/CLI-002").json()
+
+
+def test_upgrade_of_existing_calibration_preserves_effective_score(api):
+    trial=calculate(api,"default")
+    assert trial["status"]=="success"
+    ctx=api.get(API).json()["context"]
+    old_reference=ctx["risk_preference_scores"][0]["score"]
+    with learning.Journal().db() as db:
+        db.execute("INSERT INTO risk_calibrations(client,revision,chosen,baseline,created,mode) "
+                   "VALUES(?,?,?,?,?,NULL)",(CLIENT,1,65,old_reference-2,"legacy"))
+    for _ in range(2):
+        index=api.get(API).json()["context"]["working_risk_index"]
+        assert index["effective"] == pytest.approx(67) and index["calibration"]["mode"] == "adaptive"
+
+
+def test_work_day_limit_reopens_after_local_midnight(api, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    clock = datetime(2026,11,28,0,0,tzinfo=timezone.utc)
+    monkeypatch.setattr(learning, "now", lambda: clock.isoformat())
+
+    def trial(event, group, target):
+        nonlocal clock
+        clock += timedelta(seconds=1)
+        api.post("/api/portfolio/execute",json={"task":"allocation","client_id":CLIENT,"target_stock_weight":target,
+                 "observation":{"event_id":event,"evidence_group_id":group,
+                                "parameter_sources":{"target_stock_weight":"manual"}}}).raise_for_status()
+        return api.get(API).json()["context"]["working_risk_index"]
+
+    first = trial("lower-first","round-a",.2)
+    same_round = trial("lower-repeat","round-a",.2)
+    new_round = trial("lower-second","round-b",.2)
+    saturated = trial("lower-third","round-c",.2)
+    assert first["effective"] == same_round["effective"] > new_round["effective"] == saturated["effective"]
+    assert 47 <= new_round["effective"] < 48
+    rising = trial("raise","round-c",1)
+    falling = trial("lower-fourth","round-c",.2)
+    assert rising["effective"] > falling["effective"] == saturated["effective"]
+    # 05:00 UTC is midnight in New York on this date.
+    clock = datetime(2026,11,28,5,0,tzinfo=timezone.utc)
+    tomorrow = trial("lower-next-day","round-c",.2)
+    assert tomorrow["effective"] < saturated["effective"]
+
+
+def test_grade_of_declared_risk_and_mixed_objectives(api, monkeypatch):
+    messages = {
+        "客户有点不想冒太大风险": [("behavioral_hint","conservative","directed_inquiry")],
+        "客户有点保守": [("explicit_statement","conservative","declared_attitude")],
+        "客户十分保守": [("explicit_statement","conservative","declared_attitude")],
+        "客户希望进一步提高风险敞口，但是又很担心本金": [
+            ("explicit_statement","growth","declared_attitude"),("explicit_statement","conservative","declared_attitude")],
+        "客户明确偏进取，但也明确拒绝承担波动": [
+            ("explicit_statement","growth","declared_attitude"),("explicit_statement","conservative","declared_attitude")],
+    }
+    monkeypatch.setattr("self_improving_ai.agents.portfolio.preference_learning.adapter.PortfolioParser.parse_scoped",
+                        lambda _, text, scope: [signal(text,kind=kind,value=value,risk_basis=basis)
+                                               for kind,value,basis in messages[text]])
+    def submit(i, message):
+        note(api,message,f"risk-language-{i}")
+        return api.get(API).json()["context"]["working_risk_index"]
+    one, two, strong, mixed, conflict = [submit(i, text) for i, text in enumerate(messages)]
+    assert (one["effective"],two["effective"],strong["effective"]) == (40,40,15)
+    assert mixed["status"] == "scored" and 15 < mixed["effective"] < 17
+    assert mixed["breakdown"]["anchor"] == 15
+    assert conflict["status"] == "conflict" and conflict["effective"] == mixed["effective"]
+
+
+def test_same_round_semantics_reused_until_explicit_reinterpretation(tmp_path):
+    from self_improving_ai.agents.portfolio.preference_learning.parser import ParsePacket
+    from self_improving_ai.agents.portfolio.preference_learning.prompts import PROMPT_VERSION
+    count = 0
+    def parser(text):
+        nonlocal count
+        count += 1
+        return ParsePacket(json.dumps([signal(text)]), "gemini_live", "synthetic", PROMPT_VERSION)
+    learner = PortfolioLearner(tmp_path, parser=parser)
+    first = learning.event_from(CLIENT,"client_statement",{},{"event_id":"original","evidence_group_id":"shared"},
+                                STATEMENT,"advisor_note")
+    first.update(outcome="success",revision=2)
+    repeat = {**first,"event_id":"repeat","request_id":"repeat"}
+    learner.process_event(first)
+    second = learner.process_event(repeat)
+    assert second["extraction"]["parser"]["reused_from_event"] == "original" and count == 1
+    learner.process_event({**repeat,"revision":3})
+    assert count == 2
+
+
+def test_notes_distinguish_objectives_reactions_and_short_term_risk(api, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    from self_improving_ai.agents.portfolio.risk_scoring import risk_index
+    from self_improving_ai.agents.portfolio.preference_learning.parser import ParsePacket
+    from self_improving_ai.agents.portfolio.preference_learning.prompts import PROMPT_VERSION
+
+    stable = "客户整体有点保守"
+    returns = "客户愿意把提高收益的优先级放高"
+    loss = "客户亏损了一些钱，吓坏了"
+    principal = "客户吓坏了，现在只期望保住本金"
+    recovery = "客户眼红别人赚钱，现在又敢了"
+    other = "The other client is very aggressive."
+    topics = {stable: [signal(stable)], returns: [signal(returns,kind="behavioral_hint",value="growth",
+              risk_basis="allocation_intent")], loss: [signal(loss,kind="client_cue",dimension="attention",value="loss_reaction")],
+              principal: [signal(principal)], recovery: [signal(recovery,kind="behavioral_hint",value="growth",
+              risk_basis="current_risk_attitude")]}
+    clock = datetime.now(timezone.utc) - timedelta(minutes=1)
+    monkeypatch.setattr(learning,"now", lambda: clock.isoformat())
+    history_used = []
+    def parse(self, text, scope):
+        history_used.append((text,list(self.prior_notes)))
+        signals = [signal(other,value="growth")] if text == other else topics[text]
+        return ParsePacket(json.dumps(signals),"gemini_live","fixture",PROMPT_VERSION)
+    monkeypatch.setattr("self_improving_ai.agents.portfolio.preference_learning.adapter.PortfolioParser.parse_scoped",parse)
+    api.post("/api/portfolio/learning/CLI-002/notes",json={"message":other}).raise_for_status()
+    estimates = []
+    for i,text in enumerate(topics):
+        clock += timedelta(seconds=1)
+        note(api,text,f"note-context-{i}")
+        estimates.append(api.get(API).json()["context"]["working_risk_index"])
+    assert [s["effective"] for s in estimates] == [40,40,40,33,43]
+    assert estimates[-1]["breakdown"]["anchor"] == 40
+    assert principal in history_used[-1][1] and recovery not in history_used[-1][1]
+    assert all(other not in notes for _, notes in history_used)
+    learner = learning.adapter_for(FACTORY,str(learning.workspace())).learner
+    observations = learner.get_context(CLIENT, include_risk_observations=True)["risk_observations"]
+    work_date = clock.astimezone(ZoneInfo(settings.portfolio_work_timezone)).date()
+    assert risk_index(observations, {}, work_date=work_date+timedelta(days=7))["effective"] == 40
+    api.post(API+"/retract/note-context-4").raise_for_status()
+    assert api.get(API).json()["context"]["working_risk_index"]["effective"] == 33
+
+
+def test_partial_reinterpretation_retains_last_usable_risk_evidence(api, monkeypatch):
+    from self_improving_ai.agents.portfolio.preference_learning.parser import ParsePacket
+    from self_improving_ai.agents.portfolio.preference_learning.prompts import PROMPT_VERSION
+    note(api, STATEMENT, "partial-reread")
+    assert api.get(API).json()["context"]["working_risk_index"]["effective"] == 25
+    invalid = [signal(STATEMENT,risk_basis="behavioral_hint/risk_tilt"),
+               signal(STATEMENT,kind="client_cue",dimension="attention",value="risk_change")]
+    learner = learning.adapter_for(FACTORY,str(learning.workspace())).learner
+    learner.parser = lambda _: ParsePacket(json.dumps(invalid),"gemini_live","fixture",PROMPT_VERSION)
+    api.post(API+"/reinterpret/partial-reread",json={"revision":2}).raise_for_status()
+    view = api.get(API).json()
+    assert view["events"][0]["delivery_status"] == "needs_review"
+    assert view["context"]["working_risk_index"]["effective"] == 25
+
+
+def test_clear_removes_all_learning_for_one_client_and_guards_stale_requests(api, monkeypatch):
+    from self_improving_ai.agents.portfolio.application import request_slot
+
+    note(api, STATEMENT, "keep")
+    note(api, STATEMENT, "remove")
+    api.post(API+"/retract/remove").raise_for_status()
+    other = "/api/portfolio/learning/CLI-002"
+    note(api, STATEMENT, "other-client")
+    api.post(other+"/notes", json={"message":STATEMENT, "observation":{"event_id":"other-client"}}).raise_for_status()
+    ctx = api.get(API).json()["context"]
+    calibration = {"score":70,"mode":"fixed","profile_version":ctx["profile_version"],"revision":0}
+    api.post(API+"/risk-calibration", json=calibration).raise_for_status()
+    learner=learning.adapter_for(FACTORY,str(learning.workspace())).learner
+    monkeypatch.setattr(learner,"parser",None)
+    note(api,"still pending","pending")
+    assert api.get(API).json()["pending_count"] == 1
+    old = learning.event_from(CLIENT, "holdings", {}, {"event_id":"late-result"})
+    journal, cached = learning.record_start(old)
+    assert cached is None
+    assert api.post(API+"/clear", json={"confirm":False,"generation":0}).status_code == 422
+    with request_slot(CLIENT, "running"):
+        assert api.post(API+"/clear", json={"confirm":True,"generation":0}).status_code == 409
+    assert api.get(API).json()["total_events"] > 0
+    api.post(API+"/clear", json={"confirm":True,"generation":0}).raise_for_status()
+    run = learning.record_finish(journal,old,{"run_id":"late","status":"success","result":{}})
+    assert run["learning"]["status"] == "cleared"
+    cleared = api.get(API+"/export").json()
+    assert cleared["view"]["generation"] == 1 and cleared["deliveries"] == []
+    assert cleared["view"]["context"]["working_risk_index"]["effective"] == 50
+    assert cleared["view"]["context"]["working_risk_index"]["calibration"]["chosen"] is None
+    assert learner.export_client(CLIENT)["evidence_history"] == {"extractions":[],"retracted_event_ids":[]}
+    with journal.db() as db:
+        assert all(db.execute(f"SELECT count(*) FROM {table} WHERE client=?", (CLIENT,)).fetchone()[0] == 0
+                   for table in ("requests", "risk_calibrations"))
+    assert api.get(other).json()["context"]["working_risk_index"]["effective"] == 25
+    assert api.post(API+"/risk-calibration",json={**calibration,"profile_version":0}).status_code == 409
+    api.post(API+"/risk-calibration",json={**calibration,"profile_version":0,"generation":1}).raise_for_status()
+    calculate(api,"new")
+    assert api.post(API+"/clear", json={"confirm":True,"generation":0}).status_code == 409
+    assert api.get(API).json()["total_events"] == 1
+
+
+def test_paged_operations_report_own_score_changes_and_withdrawal(api):
+    note(api, STATEMENT, "oldest-note")
+    ctx = api.get(API).json()["context"]
+    api.post(API+"/risk-calibration",json={"score":70,"mode":"fixed","profile_version":ctx["profile_version"],
+             "revision":0}).raise_for_status()
+    for name in ("first-trial","repeat-trial"):
+        api.post("/api/portfolio/execute",json={"task":"allocation","client_id":CLIENT,
+                 "target_stock_weight":.6,"observation":{"event_id":name,"evidence_group_id":"shared",
+                 "parameter_sources":{"target_stock_weight":"manual"}}}).raise_for_status()
+    for i in range(9):
+        api.post("/api/portfolio/execute",json={"task":"holdings","client_id":CLIENT,
+                 "observation":{"event_id":f"holdings-{i}"}}).raise_for_status()
+    api.post(API+"/retract/oldest-note").raise_for_status()
+    first = api.get(API).json()
+    second = api.get(API+"?page=2").json()
+    assert first["pagination"] == {"page":1,"pages":2,"page_size":10}
+    assert second["pagination"]["page"] == 2 and second["total_events"] == 12
+    assert first["latest_event"] == second["latest_event"]
+    assert len(first["events"]) == 10
+    cards = {(row["event_id"],row["kind"]):row for row in second["events"]}
+    initial = cards["oldest-note","event"]["score_effects"][-1]["changes"][0]
+    withdrawn = cards["oldest-note","retract"]["score_effects"][-1]["changes"][0]
+    trial = cards["first-trial","event"]["score_effects"][-1]["changes"][0]
+    assert initial["effective"] == [50,25] and initial["components"] == {"anchor":-25}
+    assert withdrawn["effective"] == [70,70] and withdrawn["components"] == {"anchor":25}
+    assert withdrawn["reference"][1] - withdrawn["reference"][0] == pytest.approx(25)
+    assert trial["effective"] == [70,70] and trial["components"]["trial_points"] < 0
+    duplicate = next(row for row in first["events"] if row["event_id"]=="repeat-trial")
+    effect = duplicate["score_effects"][-1]["changes"][0]
+    assert effect["reference"][0] == effect["reference"][1] and not effect["components"]
+    assert api.get(API+"?page=20").json()["pagination"]["page"] == 2
 
 
 @pytest.mark.asyncio

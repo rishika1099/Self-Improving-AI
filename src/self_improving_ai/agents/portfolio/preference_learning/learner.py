@@ -82,9 +82,12 @@ def rebuild_state(initial_profile, evidence_history, rules):
     retracted = set(history.get("retracted_event_ids", []))
     for eid, revisions in revs.items():
         revisions.sort(key=lambda e: e["event"]["revision"])
-        selected = next((e for e in reversed(revisions) if e["status"] == "ok"
-                         and (e["event"]["outcome"] not in {"error", "cancelled"}
-                              or e["event"]["outcome"] == "error" and e["signals"])), revisions[-1])
+        usable = [e for e in reversed(revisions) if e["status"] == "ok"
+                  and (e["event"]["outcome"] not in {"error", "cancelled"}
+                       or e["event"]["outcome"] == "error" and e["signals"])]
+        selected = next((e for e in usable if not any(
+            i["code"] == "incomplete_coverage" for i in e["issues"]
+        )), usable[0] if usable else revisions[-1])
         events[eid] = selected
         for ex in revisions:
             if ex is selected:
@@ -111,6 +114,7 @@ def rebuild_state(initial_profile, evidence_history, rules):
                                "event_id": eid})
 
     candidates = defaultdict(list)
+    risk_observations = []
     retained, recent_attention, constraints = [], [], []
     for ex in sorted(events.values(), key=_order):
         for s in ex["signals"]:
@@ -118,6 +122,9 @@ def rebuild_state(initial_profile, evidence_history, rules):
             if ex["event"]["event_id"] in retracted:
                 ignore(s, "retracted", "The original event is retained in history but does not contribute.")
                 continue
+            if ex["status"] == "ok" and (s["dimension"] == "risk_tilt" or s["kind"] == "unscored_observation"
+                    or s["kind"] == "client_cue" and s["value"] in {"risk_change", "capital_preservation"}):
+                risk_observations.append({**s, "entry_point": ex["event"]["entry_point"]})
             if s["dimension"] == "attention":
                 retained.append(s)
                 recent_attention.append(s)
@@ -227,7 +234,8 @@ def rebuild_state(initial_profile, evidence_history, rules):
                           "other":[s for s in recent_attention if "target_stock_weight" not in s]},
              "explicit_constraints":constraints, "active_evidence":retained, "conflicts":conflicts,
              "updated_at":updated}
-    return {"state":state, "applied":[s["signal_id"] for s in retained], "ignored":ignored, "issues":issues}
+    return {"state":state, "applied":[s["signal_id"] for s in retained], "ignored":ignored, "issues":issues,
+            "risk_observations":risk_observations}
 
 
 def result_from(before, after, *, status="ok", issues=()):

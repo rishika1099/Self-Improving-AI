@@ -1,8 +1,11 @@
 """Curated text/tool models whose standard API pricing includes a free tier.
 
-Verified against https://ai.google.dev/gemini-api/docs/pricing on 2026-11-02.
+Verified against https://aistudio.google.com/docs/pricing on 2026-11-27.
 This does not establish an account's billing tier, entitlement or remaining quota.
 """
+
+HYDROGEN_MODEL = "gemini-4-hydrogen"
+MODEL_OPTIONS_VERIFIED_ON = "2026-11-27"
 
 GEMINI_MODELS = [
     {"id": "gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash-Lite",
@@ -15,7 +18,10 @@ GEMINI_MODELS = [
      "description": "A previous-generation Flash option for general agent tasks.",
      "free_tier_available": True, "recommended": False},
     {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash",
-     "description": "A newer Flash option; our last attempt received a temporary busy response.",
+     "description": "Checks model access and live generation. Google can list a model while generation is temporarily unavailable.",
+     "free_tier_available": True, "recommended": False},
+    {"id": HYDROGEN_MODEL, "label": "Gemini 4 Hydrogen",
+     "description": "Supports Gemini Developer API text generation, portfolio tools, and structured preference extraction.",
      "free_tier_available": True, "recommended": False},
 ]
 

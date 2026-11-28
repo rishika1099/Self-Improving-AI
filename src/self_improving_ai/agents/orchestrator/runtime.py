@@ -106,7 +106,7 @@ async def _run_once(runner, session_id: str, user_id: str, content: types.Conten
                             "tool.result_size": len(result_str),
                             "tool.result_preview": result_str[:500],
                         })
-                    elif hasattr(part, "text") and part.text:
+                    elif hasattr(part, "text") and part.text and not getattr(part, "thought", False):
                         response_parts.append(part.text)
 
         exec_span.set_attribute("tools_called_count", tool_count)

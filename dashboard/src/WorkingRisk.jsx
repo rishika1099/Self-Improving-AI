@@ -1,82 +1,143 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {englishText} from './displayLanguage';
 
 const show = score => Number.isFinite(score) ? score.toFixed(1) : '—';
+const signed = score => (score>0?'+':'')+show(score);
+const intensity = {mild:'mild',moderate:'explicit',strong:'strong'};
 
-export function WorkingRisk({context, status, disabled, onSave, latest, error, onRefresh}) {
+function ScoreScale({score}) {
+  return <div className="risk-scale">
+    {Number.isFinite(score) && <meter aria-label="Applied score" min="0" max="100" value={score}/>}
+    <div className="risk-scale-track" aria-hidden="true">
+      {Number.isFinite(score) && <span className="risk-scale-marker" style={{left:`${score}%`}}/>}
+    </div>
+    <div className="risk-scale-labels"><span><b>0</b> Lower risk</span><span><b>50</b> Neutral</span><span><b>100</b> Higher risk</span></div>
+  </div>;
+}
+
+function ScoreBreakdown({index}) {
+  const detail=index.breakdown;
+  const components=detail?[
+    ['Long-term baseline', detail.anchor, show(detail.anchor)],
+    ['Allocation trials', detail.trial_points, signed(detail.trial_points)],
+    ['Directional actions', detail.behavior_points, signed(detail.behavior_points)],
+    ['Recent attitude', detail.current_points, signed(detail.current_points)],
+  ]:[];
+  return <div className="risk-breakdown">
+    <div className="risk-breakdown-heading"><h4>Score breakdown</h4>
+      <div className="risk-total">System score <strong>{show(index.reference)}</strong></div>
+    </div>
+    {detail?<dl className="risk-components" aria-label="Four components of the system score">{components.map(([name,score,value],i)=><div className="risk-component" key={name}>
+      <dt>{name}</dt><dd className={i===0?'risk-base':score>0?'risk-increase':score<0?'risk-decrease':'risk-neutral'}>{value}</dd>
+    </div>)}</dl>:<p className="risk-muted">The score breakdown is temporarily unavailable.</p>}
+    <div className="risk-breakdown-foot">
+      <p>Score from routine operations <b>{show(index.automatic)}</b><span aria-hidden="true"> · </span>{index.groups} evidence groups</p>
+      {detail&&<details className="risk-evidence"><summary>View score drivers</summary>
+        <dl>
+          <div><dt>Long-term baseline</dt><dd>{index.anchor_source?
+            <>“{englishText(index.anchor_source)}”{index.anchor_intensity&&` · ${intensity[index.anchor_intensity]} statement`}</>:'Starts at a neutral baseline of 50.'}</dd></div>
+          <div><dt>Recent attitude</dt><dd>{detail.current_source?
+            <>“{englishText(detail.current_source)}” · Applies for {detail.current_days} calendar days</>:'No recent attitude currently applies.'}</dd></div>
+          <div><dt>Routine operations score</dt><dd>Recomputed from routine calculations and chat.</dd></div>
+          {detail.work_timezone&&<div><dt>Net impact today</dt><dd>Allocation trials: {signed(detail.today_trial)} points (daily cap ±{detail.daily_trial_limit}). Directional actions: {signed(detail.today_behavior)} points (daily cap ±{detail.daily_behavior_limit}).</dd></div>}
+        </dl>
+        {index.mixed_trials&&<p>This round contains opposing exploratory signals. The group was treated as neutral.</p>}
+        {index.note_legacy&&<p>You can reinterpret older notes from their original records.</p>}
+      </details>}
+    </div>
+  </div>;
+}
+
+export function WorkingRisk({context, lastConfirmed, status, disabled, onSave, latest, error, onRefresh, generation}) {
   const [editing,setEditing]=useState(false);
   const [draft,setDraft]=useState(50);
   const [basis,setBasis]=useState(null);
+  const [draftLocked,setDraftLocked]=useState(false);
+  const slider=useRef(null);
   const index=context?.working_risk_index;
   const seen=useRef(null);
   const [movement,setMovement]=useState(null);
   useEffect(()=>{
     if(!index)return;
-    if(seen.current && index.automatic!==seen.current.value)
-      setMovement({before:seen.current.value,after:index.automatic});
-    seen.current={value:index.automatic};
+    if(seen.current && index.effective!==seen.current.value)
+      setMovement({before:seen.current.value,after:index.effective});
+    seen.current={value:index.effective};
   },[index]);
-  if (!index) return <section className="working-risk" aria-label="客户激进程度"><div><h3>客户激进程度</h3>
-    <p>{error || (['module_busy','processing_pending'].includes(status)?'正在处理客户操作，评分待更新。':
-      status?'当前无法取得已核实的评分。':'正在读取客户评分…')}</p></div></section>;
+  useEffect(()=>{if(editing)slider.current?.focus();},[editing]);
+  if (!index) return <section className="working-risk risk-unavailable" aria-label="Client risk willingness"><h3>Client risk willingness</h3>
+    {Number.isFinite(lastConfirmed?.score) && <p><strong>{show(lastConfirmed.score)}</strong> / 100  Last confirmed score · Updating</p>}
+    <p>{error || (['module_busy','processing_pending'].includes(status)?'Client operations are being processed. The score will update when they are ready.':
+      status?'A verified score is currently unavailable.':'Loading client score…')}</p></section>;
   const adjusted=index.calibration.chosen!=null;
   const effective=index.effective;
+  const applied=context.scoped_risk_index || index;
+  const displayedScore=Number(show(applied.effective));
+  const fixed=adjusted && index.calibration.mode==='fixed';
   function edit() {
     setDraft(Math.round(effective ?? 50));
-    setBasis({revision:index.calibration.revision,profile_version:context.profile_version});
+    setDraftLocked(fixed);
+    setBasis({revision:index.calibration.revision,profile_version:context.profile_version,generation});
     setEditing(true);
   }
   async function save(score) {
-    const saved=await onSave('/risk-calibration',{score,...basis});
+    const saved=await onSave('/risk-calibration',{score,mode:draftLocked?'fixed':'adaptive',...basis});
     setEditing(false);
     if(!saved) onRefresh();
   }
-  return <section className="working-risk" aria-label="客户激进程度">
-    <div><h3>客户激进程度</h3><p><strong>{show(effective)}</strong> / 100　{adjusted?'顾问校准后持续学习':'当前采用分'}</p>
-      <meter aria-label="当前采用分" min="0" max="100" value={effective??50} hidden={effective==null}/>
-      <p>0 偏向减少波动 · 50 居中 · 100 偏向争取上行</p></div>
-    <div><p>日常操作自动分 {show(index.automatic)} · {index.groups} 组有效依据
-      {adjusted && ' · 顾问上次调至 '+index.calibration.chosen+' 分'}</p>
-      {index.note_score!=null && <p>{index.note_legacy?'旧客户说明仅供复核，暂未参与采用分。':
-        '补充说明分 '+show(index.note_score)+'，占校准前采用分的 15%。'}</p>}
-      {context.scoped_risk_index && <p>当前账户或本轮另有适用分 {show(context.scoped_risk_index.effective)}。</p>}
-      {index.status==='conflict' ? <p>风险证据有分歧，{adjusted?'暂用顾问设定的分数。':'暂用双向比较。'}</p> : index.legacy_review ?
-        <p>自动分含待核对的旧判断，分析暂展示双向情景。</p> :
-        effective==null ? <p>暂无方向证据。首次有方向的试算或提问将从中性起点更新。</p> :
-        <p>下次持仓、配置或风险分析将{effective<45?'加算降低股票敞口的情景':effective>55?'加算提高股票敞口的情景':'加算提高和降低股票敞口两个情景'}。</p>}
-      {latest && <p>最近操作 · {latest.event.user_text || latest.event.task} · {latest.delivery_status==='pending'?'待处理':
-        latest.delivery_status==='needs_review'?'部分内容待核对':'已处理'}</p>}
-      {movement && <p>最近观察到的自动分变化 {show(movement.before)} → {show(movement.after)}</p>}
-      {error && <p>{error}</p>}
-      {!editing ? <button type="button" disabled={disabled} onClick={edit}>调整评分</button> :
-        <div className="risk-calibration"><label>调整后的客户整体分 <output>{draft}</output>
-          <input aria-label="调整后的客户整体分" type="range" min="0" max="100" value={draft}
-            onChange={e=>setDraft(Number(e.target.value))}/></label>
-          <p>日常操作占主导。保存后，采用分会跟随校准前评分的变化，在 0–100 之间更新。</p>
-          <button type="button" disabled={disabled} onClick={()=>save(draft)}>保存评分</button>
-          {adjusted&&<button type="button" disabled={disabled} onClick={()=>save(null)}>取消手动校准</button>}
-          <button type="button" disabled={disabled} onClick={()=>setEditing(false)}>取消</button>
-        </div>}
-    </div></section>;
-}
-
-const rowNames={current:'当前持仓',baseline:'本次对照配置',less_equity:'加算 · 减少股票',more_equity:'加算 · 增加股票'};
-const usd=n=>n.toLocaleString('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2});
-
-export function ScenarioCheck({analysis}) {
-  if(!analysis) return null;
-  const origin=analysis.advisor_adjusted?'校准后采用分':'采用分';
-  const reach=analysis.scope?'当前适用范围':'客户整体';
-  return <section className="scenario-check" aria-label="根据评分加算的情景"><h3>根据评分加算的情景</h3>
-    <p>运行时使用的{reach}{origin} {show(analysis.score_used)} · {analysis.focus==='downside'?'优先检查降低敞口能少承担多少损失':
-      analysis.focus==='upside'?'优先检查增加敞口的上行空间及额外损失':'同时检查增加和降低敞口的取舍'}。</p>
-    <p>以{analysis.target_source==='request_override'?'本次指定目标':'客户已存草稿'}为对照，加算幅度为 {analysis.scenario_step_pp} 个百分点股票，上下限为 0% 和 100%。</p>
-    <div className="portfolio-table"><table><thead><tr><th>组合</th><th>股票占比</th><th>股票跌 20%</th><th>股票涨 20%</th></tr></thead>
-      <tbody>{analysis.rows.map(row=><tr key={row.label}><th>{rowNames[row.label]}</th><td>{(row.stock_weight*100).toFixed(1)}%</td>
-        <td>{usd(row.stock_fall_usd)}</td><td>{usd(row.stock_rise_usd)}</td></tr>)}</tbody></table></div>
-    {analysis.rows.length===2 && <p>本次目标已到所选方向的边界，无法继续增减股票敞口。</p>}
-    {analysis.rows.slice(2).map(row=><p key={row.label}>{row.label==='less_equity'?'降低':'提高'}股票敞口后，
-      相对本次对照配置，在下跌情景中{row.label==='less_equity'?'少损失':'多损失'} {usd(Math.abs(row.downside_change_usd))}，
-      在上涨情景中{row.label==='less_equity'?'少获得':'多获得'} {usd(Math.abs(row.upside_change_usd))}。</p>)}
-    <p>债券价格保持不变，金额为演示持仓在该情景下的变化。当前目标仍由本次输入或客户草稿决定。</p>
+  const analysisFocus=applied.status==='conflict' && applied.calibration.chosen==null?'Compare both directions while conflicting statements are reviewed':
+    applied.legacy_review?'Compare both directions while older evidence is reviewed':
+    displayedScore<45?'Test a lower stock allocation':
+    displayedScore>55?'Test a higher stock allocation':'Test both higher and lower stock allocations';
+  const change=movement?Number((movement.after-movement.before).toFixed(1)):0;
+  const latestOperation=englishText(latest?.event.user_text || latest?.event.task,'Original-language input');
+  return <section className="working-risk" aria-label="Client risk willingness">
+    <header className="risk-header"><h3>Client risk willingness</h3>
+      <button className="risk-button" type="button" disabled={disabled} aria-expanded={editing} aria-controls="risk-calibration-editor"
+        onClick={editing?()=>setEditing(false):edit}>{editing?'Close score editor':'Adjust score'}</button>
+    </header>
+    <div className="risk-summary">
+      <div className="risk-hero">
+        <div className="risk-hero-top"><span>Applied score</span>
+          <span className={`risk-mode${fixed?' risk-mode-fixed':''}`}>{fixed?'Locked score':adjusted?'Manual starting point':'Automatic learning'}</span>
+        </div>
+        <div className="risk-value"><strong>{show(effective)}</strong><span> / 100</span>
+          {change!==0&&<small className={change>0?'risk-increase':'risk-decrease'}>Since last update {signed(change)}</small>}
+        </div>
+        <ScoreScale score={effective}/>
+        {adjusted&&<p className="risk-hero-note">Advisor set {index.calibration.chosen}{fixed?'':' · Learning continues from this starting point'}</p>}
+        {index.status==='insufficient'&&!adjusted&&<p className="risk-hero-note">Starting at neutral until directional evidence is available.</p>}
+      </div>
+      <ScoreBreakdown index={index}/>
+    </div>
+    {editing&&<form id="risk-calibration-editor" className="risk-calibration" onSubmit={event=>{event.preventDefault();if(!disabled)save(draft);}}>
+      <div className="risk-editor-grid">
+        <div className="risk-slider-field">
+          <div className="risk-slider-heading"><label htmlFor="risk-draft-score">Adjusted household score</label><output htmlFor="risk-draft-score">{draft}</output></div>
+          <input id="risk-draft-score" ref={slider} type="range" min="0" max="100" value={draft} disabled={disabled}
+            style={{'--risk-draft':`${draft}%`}} onChange={e=>setDraft(Number(e.target.value))}/>
+          <div className="risk-slider-labels" aria-hidden="true"><span>0</span><span>50</span><span>100</span></div>
+        </div>
+        <div className="risk-lock">
+          <div className="risk-lock-heading"><b id="risk-lock-label"><span className="risk-lock-icon" aria-hidden="true"/>Lock applied score</b>
+            <button className="risk-switch" type="button" role="switch" aria-labelledby="risk-lock-label"
+              aria-describedby="risk-lock-help" aria-checked={draftLocked} disabled={disabled}
+              onClick={()=>setDraftLocked(value=>!value)}><span aria-hidden="true" className="risk-switch-thumb"/></button>
+          </div>
+          <p id="risk-lock-help">{draftLocked?'On · The applied household score stays fixed. The system score continues to update.':
+            'Off · The applied score starts at your manual value and adjusts with new evidence.'}</p>
+        </div>
+      </div>
+      <div className="risk-editor-actions">
+        {adjusted&&<button type="button" className="risk-button risk-reset-button" disabled={disabled} onClick={()=>save(null)}>Remove manual adjustment</button>}
+        <button type="button" className="risk-button" disabled={disabled} onClick={()=>setEditing(false)}>Cancel</button>
+        <button type="submit" className="risk-button risk-save-button" disabled={disabled}>Save score</button>
+      </div>
+    </form>}
+    <div className="risk-footer">
+      <p><b>Next analysis</b><span>{analysisFocus}{context.scoped_risk_index&&` · Score for this scope ${show(applied.effective)}`}</span></p>
+      {latest && <p className="risk-latest"><b>Latest operation</b><span title={latestOperation}>{latestOperation}</span>
+        <small>{latest.delivery_status==='pending'?'Pending':latest.delivery_status==='needs_review'?'Needs review':'Processed'}</small></p>}
+    </div>
+    {error&&<p role="alert" className="risk-action-error">{error}</p>}
   </section>;
 }

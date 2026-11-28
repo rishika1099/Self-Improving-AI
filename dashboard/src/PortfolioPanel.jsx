@@ -1,13 +1,16 @@
 import React, { useEffect, useRef, useState } from "react";
 import ConnectionSettings from "./ConnectionSettings";
 import {RiskInterpretation} from "./PreferenceEvidence";
-import {ScenarioCheck} from "./WorkingRisk";
+import {ScenarioCheck} from "./ScenarioCheck";
 import CustomerLearning from "./CustomerLearning";
 import { requestJson } from "./connectionRequest";
+import {englishText, englishJson} from "./displayLanguage";
+import {renderMarkdown} from "./renderMarkdown";
 import "./portfolio.css";
 
 const money = (n,currency="USD") => new Intl.NumberFormat("en-US", {style:"currency",currency,maximumFractionDigits:2}).format(n);
 const percent = n => `${(n*100).toFixed(3)}%`;
+const initialQuestion = "Show the selected client’s allocation drift against its stored draft target.";
 
 export default function PortfolioPanel({clients}) {
   const [client, setClient] = useState("CLI-001");
@@ -17,7 +20,7 @@ export default function PortfolioPanel({clients}) {
   const [end, setEnd] = useState("2026-09-30");
   const [marketSources,setMarketSources]=useState({symbol:'default',start_date:'default',end_date:'default'});
   const [mode, setMode] = useState("calculate");
-  const [message, setMessage] = useState("Show the selected client's allocation drift against its stored draft target.");
+  const [message, setMessage] = useState(initialQuestion);
   const [textSource,setTextSource]=useState('default');
   const [group,setGroup]=useState(()=>crypto.randomUUID());
   const activityTime=useRef(Date.now());
@@ -70,8 +73,8 @@ export default function PortfolioPanel({clients}) {
       setLearningRefresh(v=>v+1);
       if (data.status === "error") {
         const failure = data.result?.error;
-        const message = failure?.message || "This request is unavailable.";
-        const retryTime = failure?.retry_at ? new Date(failure.retry_at).toLocaleTimeString() : null;
+        const message = englishText(failure?.message, "The provider returned an untranslated error. Please retry.") || "This request is unavailable.";
+        const retryTime = failure?.retry_at ? new Date(failure.retry_at).toLocaleTimeString("en-US") : null;
         setError(retryTime ? `${message} Retry after ${retryTime}.` : message);
       }
     } catch (exception) {if(pending.current===controller&&exception.kind!=="cancelled")setError(exception.message || "Could not reach the service.");}
@@ -87,7 +90,10 @@ export default function PortfolioPanel({clients}) {
       <label>Workflow<select aria-label="Workflow" value={mode} disabled={busy} onChange={e=>reset(setMode)(e.target.value)}>
         <option value="calculate">Portfolio calculations</option><option value="agent">Ask Portfolio Agent (Gemini)</option>
       </select></label>
-      <label>Client<select aria-label="Client" value={client} disabled={busy} onChange={e=>{changeContext(setClient)(e.target.value);setGroup(crypto.randomUUID());}}>{clients.map(c=><option key={c.client_id} value={c.client_id}>{c.profile.name}</option>)}</select></label>
+      <label>Client<select aria-label="Client" value={client} disabled={busy} onChange={e=>{
+        changeContext(setClient)(e.target.value);setGroup(crypto.randomUUID());
+        setMessage(initialQuestion);setTextSource('default');lastAttempt.current=null;
+      }}>{clients.map(c=><option key={c.client_id} value={c.client_id}>{englishText(c.profile.name,c.client_id)}</option>)}</select></label>
       {mode === "agent" ? <label className="portfolio-wide">Your question<textarea aria-label="Your question" value={message} required maxLength={3000} disabled={busy} onChange={e=>{reset(setMessage)(e.target.value);setTextSource('manual');}}/></label> : <>
         <label>Analysis<select aria-label="Analysis" value={task} disabled={busy} onChange={e=>changeContext(setTask)(e.target.value)}>
           <option value="allocation">Allocation drift</option><option value="risk">Risk and return</option>
@@ -104,7 +110,7 @@ export default function PortfolioPanel({clients}) {
     </form>
     {busy&&<p role="status">{mode==="agent"?"Asking Gemini and checking portfolio tools… This can take up to two minutes.":"Running the selected calculation…"} You can cancel waiting.</p>}
     {notice&&<p role="status">{notice}</p>}
-    {run?.learning&&<p role="status">{run.learning.status==='storage_error'?'本次学习记录未成功保存，计算结果仍可查看。':run.learning.status==='connected'?'本次操作已交给学习模块。':'本次操作已记录，偏好更新仍待处理。'}</p>}
+    {run?.learning&&<p role="status">{run.learning.status==='storage_error'?'The learning record could not be saved. The calculation is available below.':run.learning.status==='cleared'?'Client learning records were cleared.':run.learning.status==='connected'?'This operation was sent to the learning module.':'Operation saved. The preference update is pending.'}</p>}
     {mode === "agent" && <p>Uses the configured Gemini account. Missing configuration is reported explicitly.</p>}
     {error && <div className="portfolio-error" role="alert">{error}{(["MISSING_API_KEY","MISSING_MODEL_CONFIGURATION"].includes(run?.result?.error?.code)||run?.result?.source==="gemini")&&<button type="button" className="portfolio-configure-link" onClick={()=>setConnectionsOpen(true)}>Open connection settings</button>}{run?.result?.error?.retryable&&<button type="button" className="portfolio-configure-link" disabled={busy} onClick={submit}>Retry analysis</button>}</div>}
     {run && <div className="portfolio-results" aria-live="polite">
@@ -113,20 +119,24 @@ export default function PortfolioPanel({clients}) {
       {result?.annual_volatility !== undefined && <><h3>Annual expected return: {percent(result.annual_expected_return)}</h3><p>Annual volatility: {percent(result.annual_volatility)} · Draft stock/bond model</p></>}
       {Number.isFinite(result?.annual_volatility) && <RiskInterpretation result={result} snapshot={run.learning_context_used} onFollowUp={changeContext(setTask)}/>}
       {run.mode==='adk_gemini' && run.learning_context_used && <p>{run.learning_context_used.context
-        ? '本次已提供当前客户的学习资料，可在下方核对来源。'
-        : '本次客户资料暂不可用，已确认偏好仍待核实。'}</p>}
-      {result?.success_probability !== undefined && <><h3>Simulated goal success: {(result.success_probability*100).toFixed(1)}%</h3><p>Goal: {money(result.goal.target_amount)} in {result.goal.years} years · Starting value: {money(result.initial_value)}</p><p>95% sampling interval: {percent(result.success_probability_interval.lower)}–{percent(result.success_probability_interval.upper)} · {result.num_simulations.toLocaleString()} paths · Seed {result.seed}. This interval excludes uncertainty in the model and assumptions.</p><p>Ending median: {money(result.ending_value_median)} · 10th–90th percentile: {money(result.ending_value_p10)}–{money(result.ending_value_p90)}</p><p>Depletion probability: {percent(result.depletion_probability)} · {result.goal.years} years · Annual contribution {money(result.goal.annual_contribution)} · Annual withdrawal {money(result.goal.annual_withdrawal)}</p><p>End-year cash flows; nominal USD. Includes all fixture accounts without modeling access restrictions.</p><p className="portfolio-warning">Stored draft note: {result.stored_goal.assumption}</p><p>Inputs changed for this run: {Object.keys(result.scenario_overrides).join(", ") || "None; stored draft used"}.</p></>}
+        ? 'The agent received client learning context for this run. See Execution evidence for the sources.'
+        : 'Client learning context was unavailable for this run.'}</p>}
+      {result?.success_probability !== undefined && <><h3>Simulated goal success: {(result.success_probability*100).toFixed(1)}%</h3><p>Goal: {money(result.goal.target_amount)} in {result.goal.years} years · Starting value: {money(result.initial_value)}</p><p>95% sampling interval: {percent(result.success_probability_interval.lower)}–{percent(result.success_probability_interval.upper)} · {result.num_simulations.toLocaleString("en-US")} paths · Seed {result.seed}. This interval excludes uncertainty in the model and assumptions.</p><p>Ending median: {money(result.ending_value_median)} · 10th–90th percentile: {money(result.ending_value_p10)}–{money(result.ending_value_p90)}</p><p>Depletion probability: {percent(result.depletion_probability)} · {result.goal.years} years · Annual contribution {money(result.goal.annual_contribution)} · Annual withdrawal {money(result.goal.annual_withdrawal)}</p><p>End-year cash flows; nominal USD. Includes all fixture accounts without modeling access restrictions.</p><p className="portfolio-warning">Stored draft note: {englishText(result.stored_goal.assumption)}</p><p>Inputs changed for this run: {Object.keys(result.scenario_overrides).join(", ") || "None; stored draft used"}.</p></>}
       {result?.accounts && <><h3>Total fixture value: {money(result.total_market_value)}</h3>{result.accounts.map(a=><div key={a.account_id}><h4>{a.account_id}</h4><ul>{a.holdings.map((h,i)=><li key={i}>{h.ticker}: {money(h.market_value)}</li>)}</ul></div>)}</>}
       {result?.price && <h3>{result.symbol}: {money(result.price,result.currency)} · {result.currency} · {result.as_of}</h3>}
       {result?.prices && <><h3>{result.symbol}: {result.count} daily closes</h3><p>{result.data_start} to {result.data_end} · {result.currency} · {result.price_type}</p></>}
       {result?.source && <p>Source: {result.source}{result.assumptions_version ? ` · Assumptions: ${result.assumptions_version}` : ""}</p>}
-      {result?.warnings?.map((text,i)=><p className="portfolio-warning" key={i}>{text}</p>)}
-      {run.response && <p className="portfolio-answer">{run.response}</p>}
-      <ScenarioCheck analysis={result?.personalized_analysis || run.trace?.findLast(
+      {result?.warnings?.map((text,i)=><p className="portfolio-warning" key={i}>{englishText(text)}</p>)}
+      {run.response && <div className="portfolio-answer" dangerouslySetInnerHTML={{__html:renderMarkdown(
+        englishText(run.response,"The model did not return an English answer. Retry the analysis or read the completed tool results below."))}}/>}
+      <ScenarioCheck key={run.run_id} snapshot={run.learning_context_used}
+        analysis={result?.personalized_analysis || run.trace?.findLast(
         e=>e.kind==='result' && e.result?.personalized_analysis)?.result.personalized_analysis}/>
-      <details><summary>Execution evidence</summary><pre>{JSON.stringify({run_id:run.run_id,status:run.status,metadata:run.metadata,trace:run.trace},null,2)}</pre></details>
+      <details><summary>Execution evidence</summary><pre>{englishJson({run_id:run.run_id,status:run.status,
+        metadata:run.metadata,trace:run.trace,client_context:run.learning_context_used})}</pre></details>
     </div>}
-    <button className="learning-new-round" type="button" disabled={busy} onClick={()=>{setGroup(crypto.randomUUID());setNotice('已开始新一轮分析。是否属于独立证据仍由学习模块判断。');}}>开始新一轮分析</button>
-    <CustomerLearning key={client} client={client} clientName={clients.find(c=>c.client_id===client)?.profile.name} group={group} refresh={learningRefresh} disabled={busy} scoreHost={scoreHost}/>
+    <button className="learning-new-round" type="button" disabled={busy} onClick={()=>{setGroup(crypto.randomUUID());setNotice('A new analysis round has started. The learning module evaluates which operations count as independent evidence.');}}>Start a new analysis round</button>
+    <CustomerLearning key={client} client={client} clientName={englishText(clients.find(c=>c.client_id===client)?.profile.name,client)} group={group} refresh={learningRefresh} disabled={busy} scoreHost={scoreHost}
+      onClear={()=>{setRun(null);setError('');setNotice('');setGroup(crypto.randomUUID());lastAttempt.current=null;}}/>
   </section>;
 }

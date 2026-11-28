@@ -1,5 +1,6 @@
 """One Calendar/Inbox contract with explicit local or Firestore storage."""
 
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -18,7 +19,7 @@ class LocalWorkspaceStore:
         self.kind, self.path = kind, str(path)
         from self_improving_ai.calendar_store import _SEED as events
         from self_improving_ai.email_store import _SEED as emails
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS workspace_documents (kind TEXT, id TEXT, document TEXT, PRIMARY KEY(kind,id))")
             db.execute("CREATE TABLE IF NOT EXISTS workspace_seeded (kind TEXT PRIMARY KEY)")
             if not db.execute("SELECT 1 FROM workspace_seeded WHERE kind=?", (kind,)).fetchone():
@@ -28,11 +29,11 @@ class LocalWorkspaceStore:
                 db.execute("INSERT INTO workspace_seeded VALUES (?)", (kind,))
 
     def _all(self):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             return [json.loads(row[0]) for row in db.execute("SELECT document FROM workspace_documents WHERE kind=?", (self.kind,))]
 
     def _get(self, identifier):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             row = db.execute("SELECT document FROM workspace_documents WHERE kind=? AND id=?", (self.kind, identifier)).fetchone()
         if not row:
             raise LookupError("Record not found")
@@ -45,13 +46,13 @@ class LocalWorkspaceStore:
         if self.kind == "email":
             record = {"from_name": "You", "from_addr": "advisor@wealthadvisors.com", "date": now.strftime("%Y-%m-%d"),
                 "time": now.strftime("%H:%M"), "read": True, "starred": False, "folder": "sent", **record}
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("INSERT INTO workspace_documents VALUES (?,?,?)", (self.kind, identifier, json.dumps(record)))
         invalidate_snapshots()
         return record
 
     def _update(self, identifier, data):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             row = db.execute("SELECT document FROM workspace_documents WHERE kind=? AND id=?", (self.kind, identifier)).fetchone()
             if not row:
                 raise LookupError("Record not found")
@@ -61,7 +62,7 @@ class LocalWorkspaceStore:
         return record
 
     def _delete(self, identifier):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             cursor = db.execute("DELETE FROM workspace_documents WHERE kind=? AND id=?", (self.kind, identifier))
             if not cursor.rowcount:
                 raise LookupError("Record not found")

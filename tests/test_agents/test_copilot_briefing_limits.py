@@ -48,6 +48,7 @@ def api():
 
 def synthetic_brief():
     return {"id": "synthetic-brief", **REQUEST, "client_name": "Synthetic Client",
+            "generated_at": "2026-11-09T15:00:00+00:00",
             "sections": [{"id": key, "title": key, "items": [
                 {"title": "Confirm plans", "text": "Plans remain tentative", "source_ids": ["NOTE-1"]}
             ]} for key in ("overview", "changes", "portfolio", "priorities", "actions", "confirm")],

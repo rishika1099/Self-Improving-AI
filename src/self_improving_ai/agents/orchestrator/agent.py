@@ -43,7 +43,7 @@ def today_line() -> str:
     from zoneinfo import ZoneInfo
 
     now = datetime.now(ZoneInfo("America/New_York"))
-    return (f"## Today\nToday is {now:%A, %B %-d, %Y} (New York). Meetings before today have already "
+    return (f"## Today\nToday is {now:%A, %B} {now.day}, {now.year} (New York). Meetings before today have already "
             "happened; \"next\" or \"upcoming\" means today or later.")
 
 

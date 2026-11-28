@@ -44,6 +44,9 @@ npx vite --port 5173
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
+For the Portfolio preference-learning walkthrough and optional key-free synthetic records, see the
+[Portfolio demo guide](docs/portfolio-demo-guide.md).
+
 ### Run Tests
 
 ```bash

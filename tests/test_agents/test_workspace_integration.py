@@ -1,6 +1,7 @@
 """Canonical Calendar/Inbox persistence and Part B evidence integration."""
 
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -239,8 +240,11 @@ def test_new_mail_invalidates_ready_preparation_but_read_star_archive_do_not(wor
     assert http.patch("/api/email/messages/EML-a1b2c3d4",json={"read":True,"starred":True,"folder":"archive"}).status_code == 200
     assert next(event for event in monitor.events if event["id"] == event_id)["version"] == before
     assert http.get(f"/api/meeting-preparations/{job['id']}/brief").status_code == 200
-    created = http.post("/api/email/messages",json={"subject":"Confirm college discussion", "to_name":"Garcia Family",
-        "to_addr":"garcia@example.com", "body":"Please confirm the college discussion agenda", "client_id":"CLI-001"})
+    with patch("self_improving_ai.workspace_store.datetime", wraps=datetime) as clock:
+        # Match the simulated November 11 review, regardless of the day the suite runs.
+        clock.now.return_value = datetime(2026, 11, 11, 16, tzinfo=timezone.utc)
+        created = http.post("/api/email/messages",json={"subject":"Confirm college discussion", "to_name":"Garcia Family",
+            "to_addr":"garcia@example.com", "body":"Please confirm the college discussion agenda", "client_id":"CLI-001"})
     assert created.status_code == 201
     after = next(event for event in monitor.events if event["id"] == event_id)["version"]
     assert before != after

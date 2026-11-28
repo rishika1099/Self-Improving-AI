@@ -127,7 +127,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await expect(page.getByRole("region", { name: "Meeting at a glance" })).toContainText("Rate impact analysis on bond portfolio");
     await page.screenshot({ path: testInfo.outputPath("unified-meeting-prep.png"), fullPage: true });
     await expect(page.locator("summary").filter({ hasText: "Preparation details" })).toContainText("Check: pass");
-      await page.getByRole("button", { name: "Mark as reviewed", exact: true }).click();
+    const markReviewed = page.getByRole("button", { name: "Mark as reviewed", exact: true });
+    if (await markReviewed.isEnabled()) await markReviewed.click();
     await expect(page.locator(".meeting-toolbar")).toContainText("Reviewed");
     if (viewport.width < 768) {
       await page.getByLabel("Navigate to page").selectOption("email");

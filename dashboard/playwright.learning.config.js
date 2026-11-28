@@ -3,7 +3,7 @@ import {fileURLToPath} from 'node:url';
 const root=fileURLToPath(new URL('../',import.meta.url));
 export default defineConfig({
   testDir:'./tests',testMatch:['learning.spec.js','portfolio.spec.js'],workers:1,
-  use:{baseURL:'http://127.0.0.1:8003',headless:true,channel:'chrome'},
+  use:{baseURL:'http://127.0.0.1:8003',headless:true,channel:process.env.PLAYWRIGHT_CHANNEL},
   webServer:{command:`"${process.env.PORTFOLIO_TEST_PYTHON||'python'}" -m uvicorn self_improving_ai.dashboard.app:app --host 127.0.0.1 --port 8003`,
     cwd:root,url:'http://127.0.0.1:8003/api/health',reuseExistingServer:false,
     env:{PYTHONPATH:`${root}/src`,SIA_PORTFOLIO_LEARNING_DIR:process.env.PORTFOLIO_BROWSER_DATA || `${root}/artifacts/browser-learning`,

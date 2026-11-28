@@ -20,6 +20,7 @@ dashboard/.env
 *.sqlite-*
 *.sqlite3
 *.sqlite3-*
+meeting_memory/
 
 # Secrets
 sa-key.json

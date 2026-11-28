@@ -106,6 +106,8 @@ async def _prepare_brief(request, *, as_of=None, store=None, offline_generator=N
                     "end_time": end.strftime("%H:%M"), "type": "general_meeting",
                     "notes": request.focus.strip(), "location": ""}
                 profile = await asyncio.to_thread(get_client_profile, request.client_id)
+                if profile.get("error_code") == "CLIENT_NOT_FOUND":
+                    raise LookupError("Client not found. Select a client from the list.")
                 if "error" in profile or end <= start or not record["title"]:
                     raise ValueError("Provide a known client, meeting focus, and valid meeting time.")
                 matches = [await asyncio.to_thread(get_store("calendar").create_event, record)]

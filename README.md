@@ -7,7 +7,7 @@ A self-improving AI copilot for wealth management advisors, built with [Google A
 ### Prerequisites
 
 - Python 3.11+
-- Node.js 18+
+- Node.js 20 (matches the Docker build)
 - GCP project with Vertex AI and Firestore enabled
 - [Application Default Credentials](https://cloud.google.com/docs/authentication/provide-credentials-adc) configured (`gcloud auth application-default login`)
 
@@ -38,7 +38,7 @@ uvicorn self_improving_ai.dashboard.app:app --env-file .env --port 8000
 
 # Terminal 2 — Frontend
 cd dashboard
-npm install
+npm ci
 npx vite --port 5173
 ```
 

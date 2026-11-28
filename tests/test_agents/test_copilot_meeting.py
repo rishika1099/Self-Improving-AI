@@ -82,7 +82,10 @@ class CopilotMeetingTests(unittest.TestCase):
         expected = generate_meeting_brief(meeting)
         with patch("self_improving_ai.dashboard.app.generate_meeting_brief", return_value=expected) as generate:
             response = asyncio.run(chat(ChatRequest(message="Confirmed meeting", meeting=meeting)))
-        generate.assert_called_once_with(meeting)
+        generate.assert_called_once()
+        bound_meeting = generate.call_args.args[0]
+        self.assertTrue(bound_meeting.calendar_event_id)
+        self.assertEqual(bound_meeting.model_copy(update={"calendar_event_id": None}), meeting)
         self.assertEqual(response["brief"], expected)
         self.assertIn("$17,500", response["response"])
         self.assertEqual(response["steps"][0]["tools_called"], expected["tools_called"])

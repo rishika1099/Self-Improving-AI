@@ -46,6 +46,17 @@ def api():
         return importlib.import_module("self_improving_ai.dashboard.app")
 
 
+@pytest.fixture
+def synthetic_appointment():
+    event = {"id": "SYNTHETIC-EVENT", "client_id": REQUEST["client_id"], "date": REQUEST["meeting_date"],
+             "title": REQUEST["focus"], "start_time": REQUEST["meeting_time"],
+             "end_time": "14:45", "type": "general_meeting"}
+    with patch("self_improving_ai.workspace_store.workspace_snapshot", return_value=[event]), \
+         patch("self_improving_ai.workspace_store.get_store") as calendar:
+        calendar.return_value.get_event.return_value = event
+        yield event
+
+
 def synthetic_brief():
     return {"id": "synthetic-brief", **REQUEST, "client_name": "Synthetic Client",
             "generated_at": "2026-11-09T15:00:00+00:00",
@@ -127,7 +138,7 @@ class DelegatingModel(BaseLlm):
                           finish_reason=types.FinishReason.STOP)
 
 
-async def test_real_adk_delegation_uses_shared_pipeline_and_only_returns_summary(api, tmp_path):
+async def test_real_adk_delegation_uses_shared_pipeline_and_only_returns_summary(api, tmp_path, synthetic_appointment):
     from self_improving_ai.agents.orchestrator.runtime import run_copilot
     from self_improving_ai.tools.briefing.copilot import meeting_briefing_agent
 
@@ -153,6 +164,7 @@ async def test_real_adk_delegation_uses_shared_pipeline_and_only_returns_summary
 
     generate.assert_awaited_once()
     assert generate.call_args.args[0].mode == "agent"
+    assert generate.call_args.args[0].calendar_event_id == synthetic_appointment["id"]
     assert result["brief"] == store.get("synthetic-brief")["brief"]
     assert result["brief"]["sources"] == synthetic_brief()["sources"]
     assert result["intent"] == "meeting_briefing"
@@ -161,7 +173,7 @@ async def test_real_adk_delegation_uses_shared_pipeline_and_only_returns_summary
     assert len(model.seen[-1]) < 12000
 
 
-async def test_api_and_copilot_share_frozen_workspace_and_persistence(api, tmp_path):
+async def test_api_and_copilot_share_frozen_workspace_and_persistence(api, tmp_path, synthetic_appointment):
     from self_improving_ai.agents.briefing.application import prepare_brief
     from self_improving_ai.tools.briefing.workspace_sources import current_scope
 
@@ -175,17 +187,13 @@ async def test_api_and_copilot_share_frozen_workspace_and_persistence(api, tmp_p
         return synthetic_brief()
 
     records = [{"id": "EMAIL-1", "client_id": REQUEST["client_id"], "date": "2026-11-09", "body": "Tentative plans"}]
-    event = {"id": "SYNTHETIC-EVENT", "client_id": REQUEST["client_id"], "date": REQUEST["meeting_date"],
-        "title": "Synthetic meeting", "start_time": "14:00", "end_time": "14:45", "type": "general_meeting"}
     with patch("self_improving_ai.tools.briefing.workspace_sources.client_mail_snapshot", return_value=records), \
-         patch("self_improving_ai.workspace_store.workspace_snapshot", return_value=[event]), \
-         patch("self_improving_ai.workspace_store.get_store") as calendar, \
          patch("self_improving_ai.agents.briefing.runtime.generate_agent_brief", side_effect=generate):
-        calendar.return_value.get_event.return_value = event
         result = await prepare_brief(MeetingBriefRequest(**REQUEST), as_of="2026-11-09", store=store)
     assert observed[0]["as_of"] == "2026-11-09"
     assert observed[0]["ai_mode"] is True
     assert observed[0]["mail"] == records
+    assert result["calendar_event"]["id"] == synthetic_appointment["id"]
     assert current_scope() is None
     assert store.get(result["id"])["status"] == "draft"
 
@@ -342,7 +350,7 @@ async def test_invalid_details_do_not_call_the_provider():
     prepare.assert_not_awaited()
 
 
-async def test_truncated_brief_is_rejected_without_saving_or_offline_fallback(api, tmp_path):
+async def test_truncated_brief_is_rejected_without_saving_or_offline_fallback(api, tmp_path, synthetic_appointment):
     from fastapi import HTTPException
 
     from self_improving_ai.agents.model_errors import ModelOutputLimitError
@@ -363,6 +371,7 @@ async def test_truncated_brief_is_rejected_without_saving_or_offline_fallback(ap
     assert caught.value.headers["X-Briefing-Run-ID"] == error.briefing_run_id
     assert "Progress is saved" in caught.value.detail
     generate.assert_awaited_once()
+    assert generate.call_args.args[0].calendar_event_id == synthetic_appointment["id"]
     offline.assert_not_called()
     with store.connect() as db:
         assert db.execute("SELECT count(*) FROM meeting_drafts").fetchone()[0] == 0

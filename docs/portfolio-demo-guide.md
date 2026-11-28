@@ -4,7 +4,7 @@ In about seven minutes, show how routine portfolio work updates a client-specifi
 
 ## Before the demo
 
-- Open [the local application](http://127.0.0.1:8002/) and select **Portfolio Analysis**. Use a fresh learning store for the example scores, or note the starting score if the household already has records.
+- Open the dashboard and select **Portfolio Analysis**. The [checkout setup](#start-with-a-fresh-local-learning-store) serves it at [localhost:8000](http://localhost:8000/). Use a fresh learning store for the example scores, or note the starting score if the household already has records.
 - In **Client preference learning**, check that **Learning module connected** is visible and pending records have finished. The main demonstration uses **Portfolio calculations** and a clean queue. These calculations and the learning from allocation trials can run without a Gemini answer.
 - For the optional agent and client-note examples, open **Connections**, check the configured Gemini model, and test it before the presentation. Leave keys out of the screen share.
 - Use the demo's synthetic holdings and the stated stock and bond assumptions throughout.
@@ -60,33 +60,35 @@ In about seven minutes, show how routine portfolio work updates a client-specifi
 
 ## Start with a fresh local learning store
 
-Use this optional rehearsal setup on the machine hosting the preview. Run the commands in the folder that contains `Start-Local.ps1` and `Stop-Local.ps1`. Each demo directory starts with empty learning history, while the application still uses the synthetic household fixtures.
+From the repository root, use Node 20, an active Python 3.11 environment, and a running Firestore emulator populated with the team's synthetic households. Set the emulator address and project to match your environment. The local workspace setting stores calendar and inbox state locally. The client list still comes from Firestore.
 
 ```powershell
-$previousLearningDirectory = $env:SIA_PORTFOLIO_LEARNING_DIR
-.\Stop-Local.ps1
-$env:SIA_PORTFOLIO_LEARNING_DIR = Join-Path $PWD ("data\portfolio-demo-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-.\Start-Local.ps1
+python -m pip install -e .
+npm --prefix dashboard ci
+npm --prefix dashboard run build
+
+$env:FIRESTORE_EMULATOR_HOST = '127.0.0.1:8088'
+$env:SIA_GOOGLE_CLOUD_PROJECT = 'demo-self-improving-ai-local'
+$env:GOOGLE_CLOUD_PROJECT = $env:SIA_GOOGLE_CLOUD_PROJECT
+$env:SIA_WORKSPACE_STORE = 'local'
+$env:GOOGLE_GENAI_USE_VERTEXAI = 'FALSE'
+$env:SIA_OTEL_EXPORTER = 'console'
+$env:SIA_PORTFOLIO_LEARNER_FACTORY = 'self_improving_ai.agents.portfolio.preference_learning.adapter:create_adapter'
+$demoDirectory = Join-Path $PWD ('.local-settings/portfolio-demo-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $demoDirectory | Out-Null
+$env:SIA_PORTFOLIO_LEARNING_DIR = Join-Path $demoDirectory 'learning'
+$env:SIA_DB_PATH = Join-Path $demoDirectory 'workspace.sqlite3'
+python -m uvicorn self_improving_ai.dashboard.app:app --host 127.0.0.1 --port 8000
 ```
 
-After the rehearsal, return to the regular local profile from the same PowerShell window.
-
-```powershell
-.\Stop-Local.ps1
-if ($previousLearningDirectory) {
-    $env:SIA_PORTFOLIO_LEARNING_DIR = $previousLearningDirectory
-} else {
-    Remove-Item Env:SIA_PORTFOLIO_LEARNING_DIR
-}
-.\Start-Local.ps1
-```
+Open [localhost:8000](http://localhost:8000/). To use the prepared history below, stop the server and run the seed in the same PowerShell window before restarting it. For the exact neutral-score examples, leave the learning directory empty. A deployment that enables preference learning needs durable storage for the journal and learner state.
 
 ## Load a prepared rehearsal with no Gemini key
 
 The repository includes an optional seed for a local Firestore emulator with the synthetic households loaded. Run it from the repository root with the project Python environment active. Use the same learning directory as your preview.
 
 ```powershell
-python scripts/seed_portfolio_demo.py --learning-dir "path-to-your-preview-learning-directory"
+python scripts/seed_portfolio_demo.py --learning-dir "$env:SIA_PORTFOLIO_LEARNING_DIR" --emulator "$env:FIRESTORE_EMULATOR_HOST" --project "$env:SIA_GOOGLE_CLOUD_PROJECT"
 ```
 
 The seed adds seven Garcia Family operations and three Thompson Trust operations. Garcia demonstrates same-round trials, a conservative statement, a recorded loss constraint, and an exploratory trial that points in the opposite direction. Thompson provides a separate, growth-oriented profile.
